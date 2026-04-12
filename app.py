@@ -7,6 +7,9 @@ import pandas as pd
 from PIL import Image
 import os
 from openai import OpenAI
+import cv2        # 🌟 新增：用於影像前處理 (請確認已 pip install opencv-python)
+import numpy as np # 🌟 新增：用於影像陣列處理
+import subprocess # 🌟 新增：用於呼叫命令列執行 Kaggle 模型
 
 # streamlit run app.py
 # 自動從 secrets.toml 讀取 API Key
@@ -14,6 +17,31 @@ client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 gmaps = googlemaps.Client(key=st.secrets["GOOGLE_MAPS_API_KEY"]) # 🌟 新增：初始化 Google Maps 客戶端
 
 st.set_page_config(page_title="AI 心電圖健康助理", page_icon="🩺", layout="wide")
+
+# ==========================================
+# 🌟 新增：影像前處理功能 (Perspective & Illumination Correction)
+# ==========================================
+def preprocess_ecg_image(pil_image):
+    """將上傳的 ECG 影像進行灰階與去陰影前處理"""
+    # 1. 將 PIL Image 轉換為 OpenCV 格式 (NumPy array)
+    open_cv_image = np.array(pil_image)
+    
+    # 確保轉換為 RGB 格式 (去除透明通道)
+    if len(open_cv_image.shape) == 3 and open_cv_image.shape[2] == 4:
+        open_cv_image = cv2.cvtColor(open_cv_image, cv2.COLOR_RGBA2RGB)
+    elif len(open_cv_image.shape) == 2:
+        open_cv_image = cv2.cvtColor(open_cv_image, cv2.COLOR_GRAY2RGB)
+        
+    # 2. 轉為單通道灰階圖
+    gray = cv2.cvtColor(open_cv_image, cv2.COLOR_RGB2GRAY)
+    
+    # 3. 光線均勻化 (去陰影)：使用 CLAHE (限制對比度自適應直方圖均衡化)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+    enhanced_img = clahe.apply(gray)
+    
+    # 如果未來需要自動透視校正，可以在這階段加入 OpenCV 的 findContours 與 getPerspectiveTransform
+    
+    return enhanced_img
 
 # ==========================================
 # 外部 API 工具 (MCP Tool)
@@ -185,28 +213,51 @@ with st.sidebar:
     
     if st.button("🚀 執行心律不整偵測", use_container_width=True):
         if uploaded_file is not None:
-            # 在畫面上顯示使用者上傳的圖片
+            # 顯示原始上傳的圖片
             img = Image.open(uploaded_file)
-            st.image(img, caption="已上傳的心電圖", use_container_width=True)
+            st.image(img, caption="原始上傳的心電圖", use_container_width=True)
+            
+            # ==========================================
+            # 🌟 新增：執行影像前處理 (去除陰影、增強對比)
+            # ==========================================
+            with st.spinner("🔧 正在進行影像前處理 (去陰影、對比增強)..."):
+                processed_cv_img = preprocess_ecg_image(img)
+                # 將 OpenCV 的灰階圖轉回 PIL 以便 Streamlit 顯示
+                processed_pil_img = Image.fromarray(processed_cv_img)
+                st.image(processed_pil_img, caption="前處理後的心電圖 (提供給模型)", use_container_width=True)
             
             # ==========================================
             # 步驟 1：將影像轉換為 CSV 並儲存
             # ==========================================
             with st.spinner("🔄 步驟 1/2：正在將心電圖影像轉換為數位訊號 (CSV)..."):
-                # 📍 這裡放你的「模型 1」的處理程式碼
-                # 假設你的模型會產出一個 DataFrame 或直接存成檔案
                 
-                # --- 模擬轉換過程 ---
-                dummy_data = {"Time": [0.1, 0.2, 0.3], "Voltage": [0.5, 0.8, 0.2]}
-                df_signal = pd.DataFrame(dummy_data)
-                
-                # 儲存 CSV 到本地端 (符合你「並存著」的需求)
+                # 🌟 新增：真實呼叫 Kaggle 模型的範例架構
                 save_path = "temp_ecg_signal.csv"
-                df_signal.to_csv(save_path, index=False)
-                # ------------------
+                temp_img_path = "temp_preprocessed_input.jpg"
                 
-            st.success(f"✅ 影像轉換成功！訊號已儲存至 `{save_path}`")
-            
+                try:
+                    # 將前處理後的乾淨圖片存下來，準備餵給你的 Kaggle 模型
+                    cv2.imwrite(temp_img_path, processed_cv_img)
+                    
+                    # ⚠️ 這裡是你未來實際呼叫 Kaggle 轉換模型的指令
+                    # subprocess.run([
+                    #     "python", "run_model.py", 
+                    #     "--input_image", temp_img_path, 
+                    #     "--output_format", "csv", 
+                    #     "--output_dir", "./"
+                    # ], check=True)
+                    
+                    # --- 為了讓你的 App 現在能動，保留原本的模擬資料 ---
+                    dummy_data = {"Time": [0.1, 0.2, 0.3], "Voltage": [0.5, 0.8, 0.2]}
+                    df_signal = pd.DataFrame(dummy_data)
+                    df_signal.to_csv(save_path, index=False)
+                    # ---------------------------------------------------
+                    
+                    st.success(f"✅ 影像轉換成功！訊號已儲存至 `{save_path}`")
+                    
+                except Exception as e:
+                    st.error(f"影像轉換模型執行失敗: {e}")
+
             # ==========================================
             # 步驟 2：讀取 CSV 進行心律不整分類
             # ==========================================
@@ -273,6 +324,7 @@ with st.sidebar:
             st.balloons() # 加上一個慶祝的小動畫
         else:
             st.error("❌ 發送失敗，請檢查終端機的錯誤訊息或 API Key 設定。")
+
 # ==========================================
 # 主畫面 (Main Area) - 對話框區塊
 # ==========================================
@@ -374,4 +426,3 @@ if prompt := st.chat_input("請輸入您的問題或需求..."):
             bot_reply = response_message.content
             st.markdown(bot_reply)
             st.session_state.messages.append({"role": "assistant", "content": bot_reply})
-
