@@ -229,8 +229,16 @@ def inject_theme():
             margin-top: 0.3rem;
         }
 
-        /* Chat input polish */
+        /* Chat input polish — 寬度對齊內容區 */
         div[data-testid="stChatInput"] { border-radius: 10px; }
+        div[data-testid="stBottom"] > div,
+        div[data-testid="stBottomBlockContainer"] {
+            max-width: 1180px !important;
+            margin-left: auto !important;
+            margin-right: auto !important;
+            padding-left: 1rem !important;
+            padding-right: 1rem !important;
+        }
 
         /* Divider subtler */
         hr { border-color: var(--border) !important; opacity: 0.6; }

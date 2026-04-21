@@ -29,6 +29,8 @@ temp_ecg_signal.csv
 temp_preprocessed_input.jpg
 *_preprocessed.jpg
 ecg_preview.png
+# 以上傳檔名輸出的數位化 CSV（僅限 repo 根目錄，不影響 boki 等子目錄）
+/*.csv
 
 # ---------- OS ----------
 .DS_Store
