@@ -1,0 +1,41 @@
+# ---------- Secrets ----------
+.streamlit/secrets.toml
+
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.Python
+
+# ---------- Virtual env ----------
+.venv/
+venv/
+env/
+
+# ---------- IDE / Editor ----------
+.idea/
+.vscode/
+*.swp
+
+# ---------- Claude Code ----------
+.claude/
+
+# ---------- Streamlit cache ----------
+.streamlit/cache/
+
+# ---------- Runtime / temp files ----------
+temp_ecg_signal.csv
+temp_preprocessed_input.jpg
+*_preprocessed.jpg
+ecg_preview.png
+
+# ---------- OS ----------
+.DS_Store
+Thumbs.db
+
+# ---------- Archive ----------
+archive.zip
+
+# ecg_digitizer 是外部 repo（physionet 2024），請另外 clone
+ecg_digitizer/

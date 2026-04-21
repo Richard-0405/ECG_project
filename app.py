@@ -10,13 +10,306 @@ from openai import OpenAI
 import cv2        # 🌟 新增：用於影像前處理 (請確認已 pip install opencv-python)
 import numpy as np # 🌟 新增：用於影像陣列處理
 import subprocess # 🌟 新增：用於呼叫命令列執行 Kaggle 模型
+import sys
+import torch
+import plotly.express as px
+from scipy import stats, signal as scipy_signal
+from fractions import Fraction
+
+# 將 boki 加入 import 路徑，讓我們可以直接呼叫它的推論 pipeline
+BOKI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "boki")
+if BOKI_DIR not in sys.path:
+    sys.path.insert(0, BOKI_DIR)
+from utils.dwt import dwt as boki_dwt
+from utils.inference_torch import inference_torch as boki_inference
+
+BOKI_LABELS = {
+    0: "Normal (正常)",
+    1: "AF (心房顫動)",
+    2: "VFL (心室撲動/顫動)",
+    3: "SVTA (上心室頻脈)",
+    4: "Others (其他異常)",
+}
+
+DEVICE_STR = "CUDA ({})".format(torch.cuda.get_device_name(0)) if torch.cuda.is_available() else "CPU"
+
+
+def classify_with_boki(csv_path, fs=500, window_seconds=5, fs_target=180):
+    """讀取數位化後的 ECG CSV，用 boki 推論每 5 秒視窗的心律類別。
+
+    CSV 欄位：Time, I, II, III, aVR, aVL, aVF, V1, V2, V3, V4, V5, V6
+    → 使用 Lead II（完整 rhythm strip）作為輸入。
+    回傳：dominant_label(int), counts(dict[label]=n), total_windows(int)
+    """
+    df = pd.read_csv(csv_path)
+    sig = df["II"].to_numpy(dtype=float)
+
+    window_size = int(fs * window_seconds)
+    frac = Fraction(fs_target / fs).limit_denominator()
+    p, q = frac.numerator, frac.denominator
+
+    step = window_size  # 不重疊
+    n_windows = max(1, (len(sig) - window_size) // step + 1)
+    preds = []
+    for i in range(n_windows):
+        s = sig[i * step : i * step + window_size]
+        if len(s) < window_size:
+            s = np.pad(s, (0, window_size - len(s)), "constant")
+        s = stats.zscore(s)
+        s = np.nan_to_num(s)
+        s = scipy_signal.resample_poly(s, p, q)
+        s = boki_dwt(s, "db1", 1)
+        pred = boki_inference(s)
+        preds.append(int(pred[0]))
+
+    counts = {lab: preds.count(lab) for lab in range(5)}
+    dominant = max(counts, key=counts.get)
+    return dominant, counts, len(preds)
 
 # streamlit run app.py
 # 自動從 secrets.toml 讀取 API Key
 client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 gmaps = googlemaps.Client(key=st.secrets["GOOGLE_MAPS_API_KEY"]) # 🌟 新增：初始化 Google Maps 客戶端
 
-st.set_page_config(page_title="AI 心電圖健康助理", page_icon="🩺", layout="wide")
+st.set_page_config(page_title="心電圖智慧助理", page_icon="◐", layout="wide")
+
+
+# ==========================================
+# 視覺樣式（注入 CSS）
+# ==========================================
+def inject_theme():
+    st.markdown(
+        """
+        <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+TC:wght@400;500;700&family=Noto+Serif+TC:wght@500;700&family=JetBrains+Mono:wght@500&display=swap');
+        :root {
+            --accent: #14b8a6;
+            --accent-soft: rgba(20,184,166,0.12);
+            --border: rgba(148,163,184,0.18);
+            --muted: #94a3b8;
+            --text: #e2e8f0;
+        }
+        html, body, .stApp, .stMarkdown, .stText,
+        button, input, textarea, select,
+        div[data-testid="stSidebar"],
+        div[data-testid="stChatMessage"],
+        div[data-testid="stChatInput"] {
+            font-family: "Inter", "Noto Sans TC", "PingFang TC",
+                         "Microsoft JhengHei", system-ui, sans-serif;
+            letter-spacing: 0.005em;
+            font-feature-settings: "ss01", "cv11", "tnum";
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+        /* Display / headings — serif for editorial feel */
+        .page-hero h1, h1, h2, h3 {
+            font-family: "Noto Serif TC", "Source Han Serif TC",
+                         "Inter", serif !important;
+            font-weight: 700 !important;
+            letter-spacing: -0.015em;
+        }
+        /* Monospace / code */
+        code, pre, .device-badge, .eyebrow, .page-hero .sub {
+            font-family: "JetBrains Mono", "Inter", monospace !important;
+        }
+        /* 保留 Streamlit 的 Material Symbols 圖示字型 */
+        [class*="material-symbols"], [class*="material-icons"],
+        span[data-testid*="icon"] {
+            font-family: "Material Symbols Rounded",
+                         "Material Symbols Outlined",
+                         "Material Icons" !important;
+        }
+        .block-container { padding-top: 2.2rem; max-width: 1180px; }
+
+        /* Eyebrow / section label */
+        .eyebrow {
+            font-size: 0.72rem;
+            font-weight: 600;
+            letter-spacing: 0.22em;
+            text-transform: uppercase;
+            color: var(--muted);
+            margin: 0 0 0.35rem 0;
+        }
+        .section-title {
+            font-size: 1.05rem;
+            font-weight: 600;
+            margin: 0 0 0.9rem 0;
+            color: var(--text);
+        }
+
+        /* Page header */
+        .page-hero {
+            display: flex; align-items: baseline; gap: 0.9rem;
+            padding: 0 0 0.4rem 0;
+            border-bottom: 1px solid var(--border);
+            margin-bottom: 1.6rem;
+        }
+        .page-hero h1 {
+            font-size: 1.85rem; font-weight: 700; margin: 0;
+            letter-spacing: -0.01em;
+        }
+        .page-hero .sub {
+            font-size: 0.85rem; color: var(--muted);
+            letter-spacing: 0.14em; text-transform: uppercase;
+        }
+
+        /* Sidebar headings — replace default h2 look */
+        section[data-testid="stSidebar"] h2 {
+            font-size: 0.72rem !important;
+            font-weight: 600 !important;
+            letter-spacing: 0.22em !important;
+            text-transform: uppercase !important;
+            color: var(--muted) !important;
+            margin-top: 1.6rem !important;
+            margin-bottom: 0.6rem !important;
+            padding: 0 !important;
+        }
+        section[data-testid="stSidebar"] h1 {
+            font-size: 1.25rem !important;
+            font-weight: 700 !important;
+            letter-spacing: -0.005em !important;
+        }
+
+        /* Buttons: primary = teal accent */
+        .stButton > button {
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            font-weight: 500;
+            transition: all 0.15s ease;
+            padding: 0.55rem 1rem;
+        }
+        .stButton > button:hover {
+            border-color: var(--accent);
+            color: var(--accent);
+        }
+        .stButton > button[kind="primary"] {
+            background: var(--accent);
+            border-color: var(--accent);
+            color: #0f172a;
+        }
+        .stButton > button[kind="primary"]:hover {
+            background: #0d9488;
+            border-color: #0d9488;
+            color: #0f172a;
+        }
+
+        /* Device badge */
+        .device-badge {
+            display: inline-flex; align-items: center; gap: 0.45rem;
+            padding: 0.25rem 0.65rem;
+            border: 1px solid var(--border);
+            border-radius: 999px;
+            font-size: 0.72rem; color: var(--muted);
+            letter-spacing: 0.08em; text-transform: uppercase;
+        }
+        .device-badge::before {
+            content: ""; width: 6px; height: 6px; border-radius: 50%;
+            background: var(--accent); box-shadow: 0 0 8px var(--accent);
+        }
+
+        /* Status bar (subtle inline) */
+        .status-line {
+            font-size: 0.82rem; color: var(--muted);
+            padding: 0.55rem 0.8rem;
+            border-left: 2px solid var(--accent);
+            background: var(--accent-soft);
+            border-radius: 2px;
+            margin: 0.4rem 0 0.8rem 0;
+        }
+
+        /* Cards */
+        div[data-testid="stVerticalBlockBorderWrapper"] {
+            border-radius: 10px;
+        }
+
+        /* Image captions tighter */
+        div[data-testid="stImage"] figcaption {
+            font-size: 0.78rem; color: var(--muted);
+            text-transform: uppercase; letter-spacing: 0.14em;
+            margin-top: 0.3rem;
+        }
+
+        /* Chat input polish */
+        div[data-testid="stChatInput"] { border-radius: 10px; }
+
+        /* Divider subtler */
+        hr { border-color: var(--border) !important; opacity: 0.6; }
+
+        /* ---------- Animations ---------- */
+        @keyframes fadeUp {
+            from { opacity: 0; transform: translateY(8px); }
+            to   { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; } to { opacity: 1; }
+        }
+        @keyframes pulse {
+            0%, 100% { box-shadow: 0 0 0 0 rgba(20,184,166,0.55); }
+            50%      { box-shadow: 0 0 0 6px rgba(20,184,166,0); }
+        }
+        @keyframes shimmer {
+            0%   { background-position: -200px 0; }
+            100% { background-position: 200px 0; }
+        }
+        .page-hero,
+        .status-line,
+        div[data-testid="stImage"],
+        div[data-testid="stPlotlyChart"],
+        div[data-testid="stChatMessage"] {
+            animation: fadeUp 0.45s ease both;
+        }
+        .eyebrow, .section-title {
+            animation: fadeIn 0.5s ease both;
+        }
+        .device-badge::before {
+            animation: pulse 2s ease-in-out infinite;
+        }
+        /* Buttons press feedback */
+        .stButton > button:active { transform: translateY(1px); }
+
+        /* Spinner box polish */
+        div[data-testid="stSpinner"] {
+            background: linear-gradient(
+                90deg,
+                rgba(20,184,166,0.06) 0%,
+                rgba(20,184,166,0.15) 50%,
+                rgba(20,184,166,0.06) 100%);
+            background-size: 200px 100%;
+            animation: shimmer 1.6s linear infinite;
+            border-radius: 6px;
+            padding: 0.2rem 0.4rem !important;
+        }
+
+        /* ---------- RWD ---------- */
+        @media (max-width: 768px) {
+            .block-container {
+                padding: 1.2rem 0.8rem !important;
+                max-width: 100% !important;
+            }
+            .page-hero {
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 0.25rem;
+                padding-bottom: 0.8rem;
+                margin-bottom: 1.1rem;
+            }
+            .page-hero h1 { font-size: 1.45rem; }
+            .page-hero .sub { font-size: 0.7rem; letter-spacing: 0.1em; }
+            section[data-testid="stSidebar"] { min-width: 85vw !important; }
+            div[data-testid="stChatMessage"] { padding: 0.5rem 0.6rem; }
+            .stButton > button { padding: 0.7rem 1rem; font-size: 0.95rem; }
+        }
+        @media (max-width: 480px) {
+            .page-hero h1 { font-size: 1.25rem; }
+            .eyebrow { font-size: 0.66rem; letter-spacing: 0.18em; }
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+inject_theme()
 
 # ==========================================
 # 🌟 新增：影像前處理功能 (Perspective & Illumination Correction)
@@ -206,133 +499,207 @@ tools_definition = [
 # 側邊欄 (Sidebar) 區塊
 # ==========================================
 with st.sidebar:
-    st.title("⚙️ 控制面板")
-    
-    st.header("📂 上傳資料")
-    uploaded_file = st.file_uploader("請上傳心電圖 (ECG) 影像", type=['png', 'jpg', 'jpeg'])
-    
-    if st.button("🚀 執行心律不整偵測", use_container_width=True):
-        if uploaded_file is not None:
-            # 顯示原始上傳的圖片
-            img = Image.open(uploaded_file)
-            st.image(img, caption="原始上傳的心電圖", use_container_width=True)
-            
-            # ==========================================
-            # 🌟 新增：執行影像前處理 (去除陰影、增強對比)
-            # ==========================================
-            with st.spinner("🔧 正在進行影像前處理 (去陰影、對比增強)..."):
-                processed_cv_img = preprocess_ecg_image(img)
-                # 將 OpenCV 的灰階圖轉回 PIL 以便 Streamlit 顯示
-                processed_pil_img = Image.fromarray(processed_cv_img)
-                st.image(processed_pil_img, caption="前處理後的心電圖 (提供給模型)", use_container_width=True)
-            
-            # ==========================================
-            # 步驟 1：將影像轉換為 CSV 並儲存
-            # ==========================================
-            with st.spinner("🔄 步驟 1/2：正在將心電圖影像轉換為數位訊號 (CSV)..."):
-                
-                # 🌟 新增：真實呼叫 Kaggle 模型的範例架構
-                save_path = "temp_ecg_signal.csv"
-                temp_img_path = "temp_preprocessed_input.jpg"
-                
-                try:
-                    # 將前處理後的乾淨圖片存下來，準備餵給你的 Kaggle 模型
-                    cv2.imwrite(temp_img_path, processed_cv_img)
-                    
-                    # ⚠️ 這裡是你未來實際呼叫 Kaggle 轉換模型的指令
-                    # subprocess.run([
-                    #     "python", "run_model.py", 
-                    #     "--input_image", temp_img_path, 
-                    #     "--output_format", "csv", 
-                    #     "--output_dir", "./"
-                    # ], check=True)
-                    
-                    # --- 為了讓你的 App 現在能動，保留原本的模擬資料 ---
-                    dummy_data = {"Time": [0.1, 0.2, 0.3], "Voltage": [0.5, 0.8, 0.2]}
-                    df_signal = pd.DataFrame(dummy_data)
-                    df_signal.to_csv(save_path, index=False)
-                    # ---------------------------------------------------
-                    
-                    st.success(f"✅ 影像轉換成功！訊號已儲存至 `{save_path}`")
-                    
-                except Exception as e:
-                    st.error(f"影像轉換模型執行失敗: {e}")
+    st.markdown(
+        f"""
+        <div style="display:flex; flex-direction:column; gap:0.6rem; padding-bottom:0.4rem;">
+          <div style="font-size:0.72rem; letter-spacing:0.22em; text-transform:uppercase;
+                      color:var(--muted); font-weight:600;">Console</div>
+          <div style="font-size:1.25rem; font-weight:700; letter-spacing:-0.005em;">工作台</div>
+          <div class="device-badge">{DEVICE_STR}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.markdown("<div style='height:0.8rem'></div>", unsafe_allow_html=True)
 
-            # ==========================================
-            # 步驟 2：讀取 CSV 進行心律不整分類
-            # ==========================================
-            with st.spinner("🧠 步驟 2/2：正在載入 AI 模型進行心律不整分析..."):
-                # 📍 這裡放你的「模型 2」的處理程式碼
-                # 讀取剛剛存好的 CSV 檔案，丟進你的分類模型
-                
-                # --- 模擬預測過程 ---
-                # df_to_predict = pd.read_csv(save_path)
-                # prediction = your_classification_model.predict(df_to_predict)
-                # final_result = "心律不整 (Arrhythmia)" if prediction == 1 else "正常 (Normal)"
-                final_result = "心律不整 - 心房顫動 (此為模擬結果)" 
-                # ------------------
-                
-            # 顯示最終結果！
-            st.error(f"⚠️ 分析完成！預測結果：**{final_result}**") # 如果是正常可以改用 st.success
-            
-            # 將結果偷偷告訴 GPT，讓它能跟使用者討論這個狀況
-            st.session_state.messages.append({
-                "role": "system", 
-                "content": f"【系統提示】使用者剛剛上傳了一張心電圖，經過兩階段 AI 模型判定，最終結果為：「{final_result}」。請在接下來的對話中，主動關心這個結果，並提供衛教建議。"
-            })
-            
+    st.header("影像分析")
+    uploaded_file = st.file_uploader(
+        "上傳 12 導程 ECG 影像",
+        type=["png", "jpg", "jpeg"],
+        label_visibility="visible",
+    )
+
+    analyze_clicked = st.button("開始分析", use_container_width=True, type="primary")
+
+    # ---- 執行分析（只在按下按鈕時觸發；結果寫入 session_state） ----
+    if analyze_clicked:
+        if uploaded_file is None:
+            st.warning("請先上傳 ECG 影像")
         else:
-            st.warning("請先上傳 ECG 影像！")
-            
-    st.divider() 
-    
-    st.header("👤 個人資訊設定")
-    with st.expander("展開設定", expanded=True):
-        user_name = st.text_input("姓名", placeholder="例如：王小明", value="使用者")
+            img = Image.open(uploaded_file)
+            img_bytes = uploaded_file.getvalue()
+
+            try:
+                with st.spinner("影像前處理中"):
+                    processed_cv_img = preprocess_ecg_image(img)
+
+                with st.spinner(f"訊號數位化中 — {DEVICE_STR}"):
+                    file_stem = os.path.splitext(uploaded_file.name)[0]
+                    save_path = f"{file_stem}.csv"
+                    temp_img_path = f"{file_stem}_preprocessed.jpg"
+                    cv2.imwrite(temp_img_path, processed_cv_img)
+                    result = subprocess.run(
+                        [sys.executable, "ecg_digitize.py",
+                         "--input", temp_img_path,
+                         "--output", save_path],
+                        capture_output=True, text=True, timeout=300,
+                    )
+                    if result.returncode != 0:
+                        raise RuntimeError(result.stderr)
+
+                with st.spinner(f"節律分類中 — {DEVICE_STR}"):
+                    dominant, counts, total = classify_with_boki(save_path)
+
+                final_result = BOKI_LABELS[dominant]
+                dist_lines = [
+                    f"- {BOKI_LABELS[l]}: {counts.get(l, 0)} 視窗 "
+                    f"({(counts.get(l, 0)/total*100 if total else 0):.1f}%)"
+                    for l in range(5)
+                ]
+                dist_text = "\n".join(dist_lines)
+
+                st.session_state.analysis = {
+                    "image_bytes": img_bytes,
+                    "filename": uploaded_file.name,
+                    "csv_path": save_path,
+                    "dominant": dominant,
+                    "counts": counts,
+                    "total": total,
+                    "final_result": final_result,
+                }
+
+                st.session_state.messages.append({
+                    "role": "system",
+                    "content": (
+                        f"【系統提示】使用者剛剛上傳了一張心電圖，經過影像數位化 + boki 分類，"
+                        f"主要節律為「{final_result}」；各類別視窗分佈：\n{dist_text}\n"
+                        "請在接下來的對話中主動關心這個結果，並提供衛教建議。"
+                    ),
+                })
+
+            except Exception as e:
+                st.error(f"分析失敗：{e}")
+
+    # ---- 渲染結果（每次 rerun 都會從 session_state 重繪，聊天後也不會消失） ----
+    analysis = st.session_state.get("analysis")
+    if analysis is not None:
+        from io import BytesIO
+        st.image(
+            Image.open(BytesIO(analysis["image_bytes"])),
+            caption=analysis["filename"],
+            use_container_width=True,
+        )
+        st.markdown(
+            f"<div class='status-line'>訊號已輸出至 "
+            f"<code>{analysis['csv_path']}</code></div>",
+            unsafe_allow_html=True,
+        )
+
+        counts = analysis["counts"]
+        pie_df = pd.DataFrame({
+            "類別": [BOKI_LABELS[l] for l in range(5) if counts.get(l, 0) > 0],
+            "視窗數": [counts[l] for l in range(5) if counts.get(l, 0) > 0],
+        })
+        st.markdown(
+            "<div class='eyebrow' style='margin-top:0.8rem'>Rhythm Distribution</div>"
+            "<div class='section-title'>節律分佈</div>",
+            unsafe_allow_html=True,
+        )
+        fig = px.pie(
+            pie_df,
+            names="類別",
+            values="視窗數",
+            color_discrete_sequence=[
+                "#14b8a6", "#f59e0b", "#ef4444",
+                "#8b5cf6", "#64748b",
+            ],
+            hole=0.55,
+        )
+        fig.update_traces(
+            textinfo="percent",
+            textfont=dict(size=16, color="#0f172a", family="Inter"),
+            marker=dict(line=dict(color="rgba(15,23,42,0.9)", width=2)),
+            hovertemplate="<b>%{label}</b><br>視窗數 %{value}<br>佔比 %{percent}<extra></extra>",
+            hoverlabel=dict(font_size=14),
+        )
+        fig.update_layout(
+            showlegend=True,
+            legend=dict(
+                font=dict(size=13, color="#cbd5e1"),
+                orientation="v",
+                y=0.5, yanchor="middle",
+                x=1.02, xanchor="left",
+            ),
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            margin=dict(t=10, b=10, l=10, r=10),
+            height=380,
+            transition=dict(duration=500, easing="cubic-in-out"),
+        )
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+        if st.button("清除結果", use_container_width=True):
+            st.session_state.analysis = None
+            st.rerun()
+
+    st.divider()
+
+    st.header("個人資料")
+    with st.expander("編輯", expanded=True):
+        user_name = st.text_input("姓名", placeholder="王小明", value="使用者")
         age = st.number_input("年齡", min_value=1, max_value=120, value=30)
         gender = st.selectbox("性別", ["男", "女", "其他"])
-        medical_history = st.text_input("過去病史", placeholder="例如：高血壓、糖尿病...")
+        medical_history = st.text_input("過去病史", placeholder="高血壓、糖尿病")
         location = st.text_input("目前位置", value="台南市")
 
     st.divider()
-    
-    st.header("📱 家屬通報系統")
-    if st.button("📤 傳送今日健康報告給家屬", use_container_width=True):
+
+    st.header("家屬通報")
+    if st.button("傳送今日健康報告", use_container_width=True):
         # 1. 組合今日的報告內容
         today_str = datetime.date.today().strftime("%Y-%m-%d")
         
-        # 這裡可以根據你的系統狀態動態生成報告，這裡先示範基本格式
-        report_content = f"""【AI 健康助理 - 每日報告】
-📅 日期：{today_str}
-👤 姓名：{user_name} (年齡:{age})
-📍 位置：{location}
+        report_content = f"""心電圖智慧助理 — 每日健康報告
 
-🩺 系統摘要：
-今日已完成基本健康評估。心電圖數據尚未上傳（或顯示正常）。使用者有查詢附近的診所與健康食譜。
+日期　{today_str}
+姓名　{user_name}（{age} 歲）
+位置　{location}
 
-💡 AI 建議：
+— 系統摘要 —
+今日已完成基本健康評估。心電圖數據尚未上傳或顯示正常。使用者有查詢附近的診所與健康食譜。
+
+— 建議 —
 建議持續監控血壓，並維持少油少鹽的飲食習慣。
 
--- 此訊息由 AI 心電圖與健康助理自動發送 --"""
+本訊息由心電圖智慧助理自動發送。"""
 
-        # 2. 呼叫我們剛剛寫好的 LINE 函數
-        with st.spinner("正在發送 LINE 訊息給家屬..."):
+        with st.spinner("傳送中"):
             success = send_line_report(report_content)
-            
+
         if success:
-            st.success("✅ 報告已成功發送至家屬的 LINE！")
-            st.balloons() # 加上一個慶祝的小動畫
+            st.success("報告已送達家屬 LINE")
         else:
-            st.error("❌ 發送失敗，請檢查終端機的錯誤訊息或 API Key 設定。")
+            st.error("發送失敗，請檢查終端機訊息或 API Key 設定")
 
 # ==========================================
-# 主畫面 (Main Area) - 對話框區塊
+# 主畫面
 # ==========================================
-st.title("🩺 AI 心電圖與健康助理")
+st.markdown(
+    """
+    <div class="page-hero">
+      <h1>心電圖智慧助理</h1>
+      <span class="sub">ECG Intelligence Assistant</span>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
 if "messages" not in st.session_state:
     st.session_state.messages = [
-        {"role": "assistant", "content": "你好！我是您的專屬助理。您可以問我健康問題，或請我幫您尋找附近的診所！"}
+        {
+            "role": "assistant",
+            "content": "您好，我可以協助解讀心電圖分析結果、回答健康相關問題，或為您查詢附近的醫療院所與飲食建議。",
+        }
     ]
 
 for message in st.session_state.messages:
@@ -345,7 +712,7 @@ for message in st.session_state.messages:
         with st.chat_message(role):
             st.markdown(content)
 
-if prompt := st.chat_input("請輸入您的問題或需求..."):
+if prompt := st.chat_input("輸入您的問題或需求"):
     st.chat_message("user").markdown(prompt)
     st.session_state.messages.append({"role": "user", "content": prompt})
     
@@ -368,7 +735,10 @@ if prompt := st.chat_input("請輸入您的問題或需求..."):
         
         # 檢查 GPT 是否決定呼叫工具 (Function Calling)
         if response_message.tool_calls:
-            st.info("🔄 AI 正在呼叫外部工具查詢資料...")
+            st.markdown(
+                "<div class='status-line'>正在查詢外部資料</div>",
+                unsafe_allow_html=True,
+            )
             st.session_state.messages.append(response_message) # 記錄 AI 想呼叫工具的動作
             
             # 執行工具（防彈升級版）
