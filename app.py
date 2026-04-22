@@ -551,6 +551,7 @@ with st.sidebar:
                          "--input", temp_img_path,
                          "--output", save_path],
                         capture_output=True, text=True, timeout=300,
+                        encoding="utf-8", errors="replace",
                     )
                     if result.returncode != 0:
                         raise RuntimeError(result.stderr)
