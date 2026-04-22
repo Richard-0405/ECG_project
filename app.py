@@ -543,18 +543,30 @@ with st.sidebar:
 
                 with st.spinner(f"訊號數位化中 — {DEVICE_STR}"):
                     file_stem = os.path.splitext(uploaded_file.name)[0]
-                    save_path = f"{file_stem}.csv"
-                    temp_img_path = f"{file_stem}_preprocessed.jpg"
-                    cv2.imwrite(temp_img_path, processed_cv_img)
+                    final_csv_path = f"{file_stem}.csv"
+                    # 為避免 Windows cp950 在 subprocess 參數與 cv2.imwrite 無法處理非 ASCII 檔名，
+                    # 中繼檔一律使用 ASCII 安全名稱，成功後再把 CSV 重新命名為使用者的檔名。
+                    temp_img_path = "temp_preprocessed_input.jpg"
+                    temp_csv_path = "temp_ecg_signal.csv"
+                    ok, buf = cv2.imencode(".jpg", processed_cv_img)
+                    if not ok:
+                        raise RuntimeError("前處理影像編碼失敗")
+                    with open(temp_img_path, "wb") as f:
+                        f.write(buf.tobytes())
                     result = subprocess.run(
                         [sys.executable, "ecg_digitize.py",
                          "--input", temp_img_path,
-                         "--output", save_path],
+                         "--output", temp_csv_path],
                         capture_output=True, text=True, timeout=300,
                         encoding="utf-8", errors="replace",
                     )
                     if result.returncode != 0:
                         raise RuntimeError(result.stderr)
+                    # 以 Python 原生檔案 API 搬移，unicode 安全
+                    if os.path.exists(final_csv_path):
+                        os.remove(final_csv_path)
+                    os.replace(temp_csv_path, final_csv_path)
+                    save_path = final_csv_path
 
                 with st.spinner(f"節律分類中 — {DEVICE_STR}"):
                     dominant, counts, total = classify_with_boki(save_path)
