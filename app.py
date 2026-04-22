@@ -548,6 +548,18 @@ with st.sidebar:
                     # 中繼檔一律使用 ASCII 安全名稱，成功後再把 CSV 重新命名為使用者的檔名。
                     temp_img_path = "temp_preprocessed_input.jpg"
                     temp_csv_path = "temp_ecg_signal.csv"
+                    # 舊暫存檔若被 Excel 等程式鎖住會導致 PermissionError，先嘗試清除；
+                    # 若清不掉就改用 PID-based 暫存名，避免整個分析卡在寫檔階段
+                    for p in (temp_img_path, temp_csv_path):
+                        if os.path.exists(p):
+                            try:
+                                os.remove(p)
+                            except PermissionError:
+                                pass
+                    if os.path.exists(temp_csv_path):
+                        temp_csv_path = f"temp_ecg_signal_{os.getpid()}.csv"
+                    if os.path.exists(temp_img_path):
+                        temp_img_path = f"temp_preprocessed_input_{os.getpid()}.jpg"
                     ok, buf = cv2.imencode(".jpg", processed_cv_img)
                     if not ok:
                         raise RuntimeError("前處理影像編碼失敗")
