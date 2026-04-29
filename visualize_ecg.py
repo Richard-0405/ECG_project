@@ -60,5 +60,5 @@ def plot_ecg(csv_path):
 
 
 if __name__ == '__main__':
-    csv_path = sys.argv[1] if len(sys.argv) > 1 else 'result.csv'
+    csv_path = sys.argv[1] if len(sys.argv) > 1 else '1012423188-0004.csv'
     plot_ecg(csv_path)

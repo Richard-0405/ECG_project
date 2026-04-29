@@ -34,11 +34,16 @@ BOKI_LABELS = {
 DEVICE_STR = "CUDA ({})".format(torch.cuda.get_device_name(0)) if torch.cuda.is_available() else "CPU"
 
 
-def classify_with_boki(csv_path, fs=500, window_seconds=5, fs_target=180):
+def classify_with_boki(csv_path, fs=200, window_seconds=5, fs_target=180):
     """讀取數位化後的 ECG CSV，用 boki 推論每 5 秒視窗的心律類別。
 
     CSV 欄位：Time, I, II, III, aVR, aVL, aVF, V1, V2, V3, V4, V5, V6
     → 使用 Lead II（完整 rhythm strip）作為輸入。
+
+    fs=200：ecg-image-kit 用 -r 200 渲染，hengck23 stage2 crop (118..2080 px)
+    對應 10 秒 rhythm strip。先前用 fs=500 會讓 boki 以為 HR 300-400 bpm，
+    把所有訊號都判成心房顫動/心室撲動。
+
     回傳：dominant_label(int), counts(dict[label]=n), total_windows(int)
     """
     df = pd.read_csv(csv_path)

@@ -109,9 +109,15 @@ def run_stage2(net, rectified, num_samples=None):
     return series
 
 
-def series_to_dataframe(series, fs=500):
+def series_to_dataframe(series, fs=200):
     """
     Convert the (4, L) series array to a 12-lead DataFrame.
+
+    fs=200: matches ecg-image-kit generator's `-r 200` render rate used in
+    generate_5class_images.py. Stage 2 crop (118..2080 px) represents a
+    10-second rhythm strip → 1962 samples ÷ 10 s ≈ 196 Hz; 200 is the
+    nominal rate. Previously fs=500 was wrong and caused downstream boki
+    classification to see heart rates around 300-400 bpm.
 
     series layout:
         series[0] → I,   aVR, V1, V4  (4 equal segments)

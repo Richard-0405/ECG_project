@@ -41,3 +41,12 @@ archive.zip
 
 # ecg_digitizer 是外部 repo（physionet 2024），請另外 clone
 ecg_digitizer/
+
+# ---------- Generated 5-class dataset ----------
+# generate_5class_images.py 的輸出，太大不放 repo
+/ecg_5class_images/
+/ecg_5class_images.zip
+
+# PTB-XL 在 repo 根目錄產出的測試 PNG（正式輸出在 ecg_5class_images/ 內）
+/*_lr-*.png
+/*_hr-*.png
