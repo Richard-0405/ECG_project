@@ -1,0 +1,63 @@
+# ---------- Secrets ----------
+.streamlit/secrets.toml
+
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.Python
+
+# ---------- Virtual env ----------
+.venv/
+venv/
+env/
+
+# ---------- IDE / Editor ----------
+.idea/
+.vscode/
+*.swp
+
+# ---------- Claude Code ----------
+.claude/
+
+# ---------- Streamlit cache ----------
+.streamlit/cache/
+
+# ---------- Runtime / temp files ----------
+temp_ecg_signal.csv
+temp_preprocessed_input.jpg
+*_preprocessed.jpg
+ecg_preview.png
+# 以上傳檔名輸出的數位化 CSV（僅限 repo 根目錄，不影響 boki 等子目錄）
+/*.csv
+
+# ---------- OS ----------
+.DS_Store
+Thumbs.db
+
+# ---------- Archive ----------
+archive.zip
+
+# ecg_digitizer 是外部 repo（physionet 2024），請另外 clone
+ecg_digitizer/
+
+# ---------- Generated 5-class dataset ----------
+# generate_5class_images.py 的輸出，太大不放 repo
+/ecg_5class_images/
+/ecg_5class_images.zip
+
+# PTB-XL 在 repo 根目錄產出的測試 PNG（正式輸出在 ecg_5class_images/ 內）
+/*_lr-*.png
+/*_hr-*.png
+
+# ---------- Local app data / private runtime files ----------
+user_data/
+ecg_memory.db
+ecg_memory_export.txt
+.tmp.driveupload/
+*.log
+
+# ---------- Local ECG samples / generated artifacts ----------
+/*.csv
+temp_preprocessed_input.jpg
