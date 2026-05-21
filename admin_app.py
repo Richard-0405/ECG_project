@@ -1,3 +1,4 @@
+import io
 import os
 from pathlib import Path
 
@@ -7,14 +8,24 @@ import requests
 import streamlit as st
 
 
-BACKEND_URL = os.getenv("ECG_BACKEND_URL", "http://127.0.0.1:8000").rstrip("/")
 ROOT = Path(__file__).parent
 LEADS = ["I", "II", "III", "aVR", "aVL", "aVF", "V1", "V2", "V3", "V4", "V5", "V6"]
 
 
+def get_secret(key, default=None):
+    try:
+        return st.secrets.get(key, default)
+    except Exception:
+        return default
+
+
+BACKEND_URL = (os.getenv("ECG_BACKEND_URL") or get_secret("BACKEND_URL", "http://127.0.0.1:8000")).rstrip("/")
+ADMIN_PASSWORD = os.getenv("ECG_ADMIN_PASSWORD") or get_secret("ADMIN_PASSWORD", "")
+
+
 def api_get(path):
     try:
-        response = requests.get(f"{BACKEND_URL}{path}", timeout=5)
+        response = requests.get(f"{BACKEND_URL}{path}", timeout=15)
         response.raise_for_status()
         return response.json()
     except Exception as exc:
@@ -32,13 +43,19 @@ def resolve_csv_path(csv_path):
     for candidate in (ROOT / "user_data").glob(f"**/{Path(csv_path).name}"):
         if candidate.exists():
             return candidate
-    return path
+    return None
 
 
-def load_csv_preview(csv_path):
+def load_record_csv(record):
+    if record.get("csv_content"):
+        return pd.read_csv(io.StringIO(record["csv_content"])), record.get("csv_filename") or "database_csv"
+
+    csv_path = record.get("csv_path")
+    if not csv_path:
+        return None, None
     resolved = resolve_csv_path(csv_path)
-    if not resolved.exists():
-        return None, resolved
+    if not resolved:
+        return None, csv_path
     return pd.read_csv(resolved), resolved
 
 
@@ -83,8 +100,26 @@ def format_probability(value):
 
 st.set_page_config(page_title="ECG Doctor Admin", page_icon="ECG", layout="wide")
 
+if ADMIN_PASSWORD:
+    if "admin_authenticated" not in st.session_state:
+        st.session_state.admin_authenticated = False
+
+    if not st.session_state.admin_authenticated:
+        st.title("ECG Doctor Admin")
+        st.caption("請輸入後台管理密碼")
+        password = st.text_input("管理密碼", type="password")
+        if st.button("登入後台", type="primary"):
+            if password == ADMIN_PASSWORD:
+                st.session_state.admin_authenticated = True
+                st.rerun()
+            else:
+                st.error("密碼錯誤")
+        st.stop()
+else:
+    st.warning("尚未設定 ADMIN_PASSWORD。正式公開前請務必在 Streamlit secrets 設定後台密碼。")
+
 st.title("ECG Doctor Admin")
-st.caption("醫師後台檢視頁面：使用者資料、心電圖 CSV、分類結果與最近 7 天對話紀錄")
+st.caption("醫師後台：查看使用者資料、ECG 波形、分類結果與最近 7 天對話紀錄")
 
 users = api_get("/users")
 if users is None:
@@ -103,6 +138,9 @@ with st.sidebar:
     selected_label = st.selectbox("選擇使用者", list(user_options.keys()))
     selected_user = user_options[selected_label]
     st.caption(f"Backend: {BACKEND_URL}")
+    if ADMIN_PASSWORD and st.button("登出後台", use_container_width=True):
+        st.session_state.admin_authenticated = False
+        st.rerun()
 
 records = api_get(f"/users/{selected_user['id']}/records") or []
 chat_messages = api_get(f"/users/{selected_user['id']}/chat") or []
@@ -111,7 +149,7 @@ profile_tab, ecg_tab, chat_tab, files_tab = st.tabs([
     "個人資料",
     "ECG / 分類",
     "對話紀錄",
-    "個人資料夾",
+    "儲存資訊",
 ])
 
 with profile_tab:
@@ -126,8 +164,9 @@ with profile_tab:
         ("性別", selected_user.get("gender")),
         ("身高 (cm)", selected_user.get("height_cm")),
         ("體重 (kg)", selected_user.get("weight_kg")),
-        ("過去病史", selected_user.get("medical_history")),
-        ("目前位置", selected_user.get("location")),
+        ("醫療知識程度", selected_user.get("knowledge_level")),
+        ("病史", selected_user.get("medical_history")),
+        ("位置", selected_user.get("location")),
         ("備註 / 長期記憶", selected_user.get("notes")),
         ("建立時間", selected_user.get("created_at")),
         ("更新時間", selected_user.get("updated_at")),
@@ -139,7 +178,7 @@ with profile_tab:
     )
 
 with ecg_tab:
-    st.subheader("ECG 與分類紀錄")
+    st.subheader("ECG 紀錄與分類")
     if not records:
         st.info("此使用者目前沒有 ECG 紀錄。")
     else:
@@ -170,36 +209,35 @@ with ecg_tab:
         selected_record = record_options[selected_record_label]
 
         col1, col2, col3 = st.columns(3)
-        col1.metric("最大機率結果", selected_record.get("final_result") or "尚未分類")
+        col1.metric("最大機率病症", selected_record.get("final_result") or "尚未分類")
         col2.metric("機率", format_probability(selected_record.get("probability")))
         col3.metric("視窗數", selected_record.get("total_windows") or "")
 
-        st.write("類別統計")
+        st.write("分類計數")
         st.json(selected_record.get("counts") or {})
 
-        csv_path = selected_record.get("csv_path")
-        if csv_path:
-            df, resolved = load_csv_preview(csv_path)
-            st.caption(f"CSV：{resolved}")
-            if df is None:
-                st.warning("找不到 CSV 檔案，可能尚未同步到個人資料夾。")
-            else:
-                available_leads = [lead for lead in LEADS if lead in df.columns]
-                default_leads = ["II"] if "II" in available_leads else available_leads[:1]
-                selected_leads = st.multiselect(
-                    "選擇顯示導程",
-                    available_leads,
-                    default=default_leads,
-                )
-                if selected_leads:
-                    st.plotly_chart(plot_ecg(df, selected_leads), use_container_width=True)
-                with st.expander("CSV 前 20 筆資料"):
-                    st.dataframe(df.head(20), use_container_width=True)
+        df, source = load_record_csv(selected_record)
+        if source:
+            st.caption(f"CSV：{source}")
+        if df is None:
+            st.warning("找不到這筆紀錄的 CSV 內容。若是在雲端部署，請確認前台已更新並會送出 csv_content。")
+        else:
+            available_leads = [lead for lead in LEADS if lead in df.columns]
+            default_leads = ["II"] if "II" in available_leads else available_leads[:1]
+            selected_leads = st.multiselect(
+                "選擇導程",
+                available_leads,
+                default=default_leads,
+            )
+            if selected_leads:
+                st.plotly_chart(plot_ecg(df, selected_leads), use_container_width=True)
+            with st.expander("CSV 前 20 列"):
+                st.dataframe(df.head(20), use_container_width=True)
 
 with chat_tab:
     st.subheader("最近 7 天對話紀錄")
     if not chat_messages:
-        st.info("此使用者目前沒有最近 7 天對話紀錄。")
+        st.info("此使用者目前沒有最近 7 天的對話紀錄。")
     else:
         chat_df = pd.DataFrame(chat_messages)
         st.dataframe(
@@ -214,22 +252,20 @@ with chat_tab:
                 st.markdown(message.get("content", ""))
 
 with files_tab:
-    st.subheader("個人資料夾")
-    data_root = ROOT / "user_data"
-    folders = list(data_root.glob(f"user_{selected_user['id']}_*")) if data_root.exists() else []
-    if not folders:
-        st.info("尚未建立個人資料夾。重新啟動後端或新增資料後會自動同步。")
+    st.subheader("儲存資訊")
+    st.write("正式雲端版會以後端資料庫為主要資料來源。")
+    storage_rows = []
+    for record in records:
+        csv_content = record.get("csv_content") or ""
+        storage_rows.append({
+            "record_id": record.get("id"),
+            "csv_filename": record.get("csv_filename") or Path(record.get("csv_path", "")).name,
+            "csv_path": record.get("csv_path"),
+            "stored_in_database": bool(csv_content),
+            "csv_size_chars": len(csv_content),
+            "created_at": record.get("created_at"),
+        })
+    if storage_rows:
+        st.dataframe(pd.DataFrame(storage_rows), use_container_width=True, hide_index=True)
     else:
-        folder = folders[0]
-        st.code(str(folder))
-        files = [
-            {
-                "name": path.name,
-                "relative_path": str(path.relative_to(folder)),
-                "size": path.stat().st_size,
-                "modified": path.stat().st_mtime,
-            }
-            for path in folder.rglob("*")
-            if path.is_file()
-        ]
-        st.dataframe(pd.DataFrame(files), use_container_width=True, hide_index=True)
+        st.info("目前沒有 ECG 儲存資訊。")

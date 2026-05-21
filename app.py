@@ -1,6 +1,7 @@
 ﻿import streamlit as st
 import requests # 🌟 新增：用來呼叫外部 API 的套件
 import datetime
+import io
 import json
 import googlemaps  # 🌟 新增：匯入 Google Maps 套件
 import pandas as pd
@@ -33,7 +34,16 @@ BOKI_LABELS = {
 }
 
 DEVICE_STR = "CUDA ({})".format(torch.cuda.get_device_name(0)) if torch.cuda.is_available() else "CPU"
-BACKEND_URL = os.getenv("ECG_BACKEND_URL", st.secrets.get("BACKEND_URL", "http://127.0.0.1:8000")).rstrip("/")
+
+
+def get_secret(key, default=None):
+    try:
+        return st.secrets.get(key, default)
+    except Exception:
+        return default
+
+
+BACKEND_URL = (os.getenv("ECG_BACKEND_URL") or get_secret("BACKEND_URL", "http://127.0.0.1:8000")).rstrip("/")
 
 TEXT = {
     "zh": {
@@ -268,9 +278,9 @@ def classify_with_boki(csv_path, fs=200, window_seconds=5, fs_target=180):
     return dominant, counts, len(preds)
 
 # streamlit run app.py
-# 自動從 secrets.toml 讀取 API Key
-client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
-gmaps = googlemaps.Client(key=st.secrets["GOOGLE_MAPS_API_KEY"]) # 🌟 新增：初始化 Google Maps 客戶端
+# 自動從 secrets.toml 或雲端環境變數讀取 API Key
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY") or get_secret("OPENAI_API_KEY"))
+gmaps = googlemaps.Client(key=os.getenv("GOOGLE_MAPS_API_KEY") or get_secret("GOOGLE_MAPS_API_KEY")) # 🌟 新增：初始化 Google Maps 客戶端
 
 st.set_page_config(page_title="ECG Intelligence Assistant", page_icon="◐", layout="wide")
 
@@ -573,8 +583,29 @@ def resolve_ecg_csv_path(csv_path, user_id=None):
     return None
 
 
-def plot_ecg_waveform(csv_path, selected_leads):
-    df = pd.read_csv(csv_path)
+def read_csv_text(csv_path):
+    resolved = resolve_ecg_csv_path(csv_path)
+    if not resolved:
+        return None
+    try:
+        return Path(resolved).read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return Path(resolved).read_text(encoding="utf-8-sig", errors="replace")
+    except Exception:
+        return None
+
+
+def load_record_csv(record, user_id=None):
+    if record.get("csv_content"):
+        return pd.read_csv(io.StringIO(record["csv_content"])), record.get("csv_filename") or record.get("csv_path")
+
+    resolved = resolve_ecg_csv_path(record.get("csv_path"), user_id)
+    if not resolved:
+        return None, None
+    return pd.read_csv(resolved), resolved
+
+
+def plot_ecg_dataframe(df, selected_leads):
     if "Time" in df.columns:
         x = df["Time"]
         x_title = "Time (s)"
@@ -604,12 +635,17 @@ def plot_ecg_waveform(csv_path, selected_leads):
     return fig, df
 
 
+def plot_ecg_waveform(csv_path, selected_leads):
+    df = pd.read_csv(csv_path)
+    return plot_ecg_dataframe(df, selected_leads)
+
+
 def backend_request(method, path, **kwargs):
     try:
         response = requests.request(
             method,
             f"{BACKEND_URL}{path}",
-            timeout=3,
+            timeout=15,
             **kwargs,
         )
         response.raise_for_status()
@@ -677,8 +713,11 @@ def save_chat_message(user_id, role, content):
 def save_ecg_record(user_id, analysis):
     if not user_id or not analysis:
         return None
+    csv_path = analysis.get("csv_path")
     payload = {
-        "csv_path": analysis.get("csv_path"),
+        "csv_path": csv_path,
+        "csv_filename": analysis.get("csv_filename") or (Path(csv_path).name if csv_path else None),
+        "csv_content": analysis.get("csv_content") or read_csv_text(csv_path),
         "source": analysis.get("source"),
         "final_result": analysis.get("final_result"),
         "probability": analysis.get("probability"),
@@ -784,7 +823,7 @@ def search_healthy_recipe(keyword):
     """使用 Spoonacular API 真實查詢健康食譜"""
     try:
         # 準備 API 金鑰與請求網址
-        api_key = st.secrets["SPOONACULAR_API_KEY"]
+        api_key = os.getenv("SPOONACULAR_API_KEY") or get_secret("SPOONACULAR_API_KEY")
         url = "https://api.spoonacular.com/recipes/complexSearch"
         
         # 設定查詢參數 (我們加上了 diet=primal 或限制鈉含量等健康過濾條件)
@@ -828,11 +867,11 @@ def send_line_report(report_text):
     try:
         url = "https://api.line.me/v2/bot/message/push"
         headers = {
-            "Authorization": f"Bearer {st.secrets['LINE_CHANNEL_ACCESS_TOKEN']}",
+            "Authorization": f"Bearer {os.getenv('LINE_CHANNEL_ACCESS_TOKEN') or get_secret('LINE_CHANNEL_ACCESS_TOKEN')}",
             "Content-Type": "application/json"
         }
         data = {
-            "to": st.secrets["LINE_TARGET_USER_ID"],
+            "to": os.getenv("LINE_TARGET_USER_ID") or get_secret("LINE_TARGET_USER_ID"),
             "messages": [
                 {
                     "type": "text",
@@ -1498,17 +1537,13 @@ with content_col:
             selected_record = record_options[
                 st.selectbox(t("select_record"), list(record_options.keys()))
             ]
-            resolved_csv = resolve_ecg_csv_path(
-                selected_record.get("csv_path"),
-                selected_user["id"],
-            )
-            if not resolved_csv:
+            record_df, record_source = load_record_csv(selected_record, selected_user["id"])
+            if record_df is None:
                 st.warning(t("csv_not_found"))
             else:
-                preview_df = pd.read_csv(resolved_csv, nrows=5)
                 available_leads = [
                     lead for lead in ["I", "II", "III", "aVR", "aVL", "aVF", "V1", "V2", "V3", "V4", "V5", "V6"]
-                    if lead in preview_df.columns
+                    if lead in record_df.columns
                 ]
                 default_leads = ["II"] if "II" in available_leads else available_leads[:1]
                 selected_leads = st.multiselect(
@@ -1517,7 +1552,7 @@ with content_col:
                     default=default_leads,
                 )
                 if selected_leads:
-                    fig, _ = plot_ecg_waveform(resolved_csv, selected_leads)
+                    fig, _ = plot_ecg_dataframe(record_df, selected_leads)
                     st.plotly_chart(fig, use_container_width=True)
 
   else:

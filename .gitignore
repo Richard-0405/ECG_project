@@ -55,6 +55,8 @@ ecg_digitizer/
 user_data/
 ecg_memory.db
 ecg_memory_export.txt
+*.sqlite
+*.sqlite3
 .tmp.driveupload/
 *.log
 
