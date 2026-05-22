@@ -9,6 +9,20 @@ ECG 影像 ──► 影像前處理 ──► 數位化（hengck23 三階段模
 
 ---
 
+## 線上網址
+
+| 服務 | 用途 | 網址 |
+|---|---|---|
+| 前台 Streamlit | 使用者登入、ECG 數位化、心律不整辨識、AI 助理 | https://ecgproject-pprrwqjivtkjw5bwg5urra.streamlit.app |
+| 醫師後台 Streamlit | 查看使用者、ECG 紀錄、波形與對話紀錄 | https://ecgproject-w55asmpvf4d5dhb6sg2una.streamlit.app |
+| 後端 FastAPI | API 服務主機 | https://ecg-backend-h768.onrender.com |
+| 後端健康檢查 | 確認後端與 PostgreSQL 是否正常 | https://ecg-backend-h768.onrender.com/health |
+| 後端 API 文件 | FastAPI 自動文件 | https://ecg-backend-h768.onrender.com/docs |
+
+Render Free 方案閒置後會休眠，第一次打開後端或前台時可能需要等待約 30 到 60 秒喚醒。
+
+---
+
 ## 功能
 
 - **影像前處理**：灰階化 + CLAHE 對比度增強，去除陰影與雜訊
