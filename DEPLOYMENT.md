@@ -47,7 +47,7 @@ https://render.com/docs/postgresql
 6. Build Command：
 
 ```bash
-pip install -r requirements.txt
+pip install -r requirements-backend.txt
 ```
 
 7. Start Command：
@@ -55,6 +55,8 @@ pip install -r requirements.txt
 ```bash
 uvicorn backend:app --host 0.0.0.0 --port $PORT
 ```
+
+後端只需要 FastAPI 與 PostgreSQL 套件，不需要安裝 ECG 模型用的 TensorFlow / PyTorch。若使用整份 `requirements.txt`，Render Free Web Service 可能會因 Python 版本或套件過大而 build 失敗。
 
 8. Environment Variables 新增：
 
