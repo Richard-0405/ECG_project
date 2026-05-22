@@ -1,4 +1,4 @@
-﻿import streamlit as st
+import streamlit as st
 import requests # 🌟 新增：用來呼叫外部 API 的套件
 import datetime
 import io
@@ -110,6 +110,8 @@ TEXT = {
         "knowledge_values": ["beginner", "intermediate", "advanced"],
         "history_view": "過往辨識結果",
         "assistant_tab": "AI 助理",
+        "profile_edit": "個人資料編輯",
+        "rhythm_detection": "心律偵測",
         "show_history": "查看過往辨識結果",
         "hide_history": "收起過往辨識結果",
         "history_range": "資料範圍",
@@ -200,6 +202,8 @@ TEXT = {
         "knowledge_values": ["beginner", "intermediate", "advanced"],
         "history_view": "Past Detection Results",
         "assistant_tab": "AI Assistant",
+        "profile_edit": "Edit Profile",
+        "rhythm_detection": "Rhythm Detection",
         "show_history": "View Past Results",
         "hide_history": "Hide Past Results",
         "history_range": "Date Range",
@@ -1088,6 +1092,24 @@ with st.sidebar:
         st.session_state.main_panel = "history"
         st.rerun()
 
+    if st.button(
+        t("profile_edit"),
+        use_container_width=True,
+        type="primary" if st.session_state.main_panel == "profile" else "secondary",
+        key="sidebar_profile_tab",
+    ):
+        st.session_state.main_panel = "profile"
+        st.rerun()
+
+    if st.button(
+        t("rhythm_detection"),
+        use_container_width=True,
+        type="primary" if st.session_state.main_panel == "detection" else "secondary",
+        key="sidebar_detection_tab",
+    ):
+        st.session_state.main_panel = "detection"
+        st.rerun()
+
     st.divider()
 
     st.header(t("memory"))
@@ -1159,35 +1181,43 @@ with st.sidebar:
     if selected_user:
         st.caption(t("loaded", time=selected_user.get("updated_at", "")))
 
-    with st.expander(t("admin"), expanded=False):
-        if selected_user:
-            records = load_ecg_records(selected_user["id"])
-            st.write(t("history_count", count=len(records)))
-            if records:
-                records_df = pd.DataFrame(records)
-                display_cols = [
-                    "created_at",
-                    "final_result",
-                    "probability",
-                    "source",
-                    "csv_path",
-                ]
-                st.dataframe(
-                    records_df[[col for col in display_cols if col in records_df.columns]],
-                    use_container_width=True,
-                    hide_index=True,
-                )
-            if st.button(t("delete_user"), use_container_width=True):
-                if delete_memory_user(selected_user["id"]):
-                    st.session_state.active_user = None
-                    st.session_state.active_user_id = None
-                    st.session_state.messages = default_messages()
-                    st.success(t("deleted_user"))
-                    st.rerun()
-        else:
-            st.info(t("login_to_history"))
+    # Workspace tools are rendered in the main panel to keep the sidebar tidy.
 
-    st.divider()
+selected_user = st.session_state.get("active_user")
+profile_defaults = selected_user or {}
+user_name = profile_defaults.get("name", "使用者")
+age = int(profile_defaults.get("age") or 30)
+gender_options = t("gender_options")
+saved_gender = profile_defaults.get("gender")
+gender = saved_gender if saved_gender in gender_options else gender_options[0]
+height_input = float(profile_defaults.get("height_cm") or 170.0)
+weight_input = float(profile_defaults.get("weight_kg") or 65.0)
+medical_history = profile_defaults.get("medical_history") or ""
+location = profile_defaults.get("location") or "台南市"
+memory_notes = profile_defaults.get("notes") or ""
+knowledge_options = t("knowledge_options")
+knowledge_values = t("knowledge_values")
+saved_knowledge = profile_defaults.get("knowledge_level") or "beginner"
+knowledge_index = knowledge_values.index(saved_knowledge) if saved_knowledge in knowledge_values else 0
+knowledge_label = knowledge_options[knowledge_index]
+knowledge_level = knowledge_values[knowledge_index]
+
+# ==========================================
+# 主畫面
+# ==========================================
+st.markdown(
+    f"""
+    <div class="page-hero">
+      <h1>{t("title")}</h1>
+      <span class="sub">ECG Intelligence Assistant</span>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+with st.container():
+  if st.session_state.main_panel == "detection":
+    st.subheader(t("rhythm_detection"))
 
     st.header(t("digitize"))
     uploaded_file = st.file_uploader(
@@ -1195,7 +1225,6 @@ with st.sidebar:
         type=["png", "jpg", "jpeg"],
         label_visibility="visible",
     )
-
     digitize_clicked = st.button(t("run_digitize"), use_container_width=True, type="primary")
 
     st.divider()
@@ -1208,7 +1237,6 @@ with st.sidebar:
     )
     classify_clicked = st.button(t("run_classify"), use_container_width=True)
 
-    # ---- ECG 數位化：只在按下數位化按鈕時觸發 ----
     if digitize_clicked:
         if uploaded_file is None:
             st.warning(t("need_image"))
@@ -1223,12 +1251,8 @@ with st.sidebar:
                 with st.spinner(t("digitizing", device=DEVICE_STR)):
                     file_stem = os.path.splitext(uploaded_file.name)[0]
                     final_csv_path = f"{file_stem}.csv"
-                    # 為避免 Windows cp950 在 subprocess 參數與 cv2.imwrite 無法處理非 ASCII 檔名，
-                    # 中繼檔一律使用 ASCII 安全名稱，成功後再把 CSV 重新命名為使用者的檔名。
                     temp_img_path = "temp_preprocessed_input.jpg"
                     temp_csv_path = "temp_ecg_signal.csv"
-                    # 舊暫存檔若被 Excel 等程式鎖住會導致 PermissionError，先嘗試清除；
-                    # 若清不掉就改用 PID-based 暫存名，避免整個分析卡在寫檔階段
                     for p in (temp_img_path, temp_csv_path):
                         if os.path.exists(p):
                             try:
@@ -1245,15 +1269,22 @@ with st.sidebar:
                     with open(temp_img_path, "wb") as f:
                         f.write(buf.tobytes())
                     result = subprocess.run(
-                        [sys.executable, "ecg_digitize.py",
-                         "--input", temp_img_path,
-                         "--output", temp_csv_path],
-                        capture_output=True, text=True, timeout=300,
-                        encoding="utf-8", errors="replace",
+                        [
+                            sys.executable,
+                            "ecg_digitize.py",
+                            "--input",
+                            temp_img_path,
+                            "--output",
+                            temp_csv_path,
+                        ],
+                        capture_output=True,
+                        text=True,
+                        timeout=300,
+                        encoding="utf-8",
+                        errors="replace",
                     )
                     if result.returncode != 0:
                         raise RuntimeError(result.stderr)
-                    # 以 Python 原生檔案 API 搬移，unicode 安全
                     if os.path.exists(final_csv_path):
                         os.remove(final_csv_path)
                     os.replace(temp_csv_path, final_csv_path)
@@ -1271,7 +1302,6 @@ with st.sidebar:
             except Exception as e:
                 st.error(t("digitize_failed", error=e))
 
-    # ---- 心律不整辨識：預設讀取數位化 CSV；使用者上傳 CSV 時優先使用上傳檔 ----
     if classify_clicked:
         try:
             if uploaded_csv is not None:
@@ -1321,7 +1351,6 @@ with st.sidebar:
         except Exception as e:
             st.error(t("classify_failed", error=e))
 
-    # ---- 渲染結果（每次 rerun 都會從 session_state 重繪，聊天後也不會消失） ----
     analysis = st.session_state.get("analysis")
     if analysis is not None:
         from io import BytesIO
@@ -1355,104 +1384,87 @@ with st.sidebar:
             st.session_state.analysis = None
             st.rerun()
 
-    st.divider()
+  elif st.session_state.main_panel == "profile":
+    st.subheader(t("profile_edit"))
+    user_name = st.text_input(
+        t("name"),
+        placeholder="王小明",
+        value=user_name,
+    )
+    age = st.number_input(
+        t("age"),
+        min_value=1,
+        max_value=120,
+        value=age,
+    )
+    gender_index = gender_options.index(gender) if gender in gender_options else 0
+    gender = st.selectbox(t("gender"), gender_options, index=gender_index)
+    height_input = st.number_input(
+        t("height"),
+        min_value=100.0,
+        max_value=250.0,
+        value=height_input,
+        step=0.1,
+    )
+    weight_input = st.number_input(
+        t("weight"),
+        min_value=30.0,
+        max_value=200.0,
+        value=weight_input,
+        step=0.1,
+    )
+    medical_history = st.text_input(
+        t("history"),
+        placeholder=t("history_placeholder"),
+        value=medical_history,
+    )
+    location = st.text_input(t("location"), value=location)
+    memory_notes = st.text_area(t("notes"), value=memory_notes, height=110)
+    knowledge_label = st.selectbox(
+        t("knowledge_level"),
+        knowledge_options,
+        index=knowledge_index,
+    )
+    knowledge_level = knowledge_values[knowledge_options.index(knowledge_label)]
 
-    st.header(t("profile"))
-    with st.expander(t("edit"), expanded=True):
-        user_name = st.text_input(
-            t("name"),
-            placeholder="王小明",
-            value=(selected_user or {}).get("name", "使用者"),
-        )
-        age = st.number_input(
-            t("age"),
-            min_value=1,
-            max_value=120,
-            value=int((selected_user or {}).get("age") or 30),
-        )
-        gender_options = t("gender_options")
-        saved_gender = (selected_user or {}).get("gender")
-        gender_index = gender_options.index(saved_gender) if saved_gender in gender_options else 0
-        gender = st.selectbox(t("gender"), gender_options, index=gender_index)
-        # 👇 新增身高與體重
-        height_input = st.number_input(
-            t("height"),
-            min_value=100.0,
-            max_value=250.0,
-            value=float((selected_user or {}).get("height_cm") or 170.0),
-            step=0.1,
-        )
-        weight_input = st.number_input(
-            t("weight"),
-            min_value=30.0,
-            max_value=200.0,
-            value=float((selected_user or {}).get("weight_kg") or 65.0),
-            step=0.1,
-        )
-        medical_history = st.text_input(
-            t("history"),
-            placeholder=t("history_placeholder"),
-            value=(selected_user or {}).get("medical_history") or "",
-        )
-        location = st.text_input(
-            t("location"),
-            value=(selected_user or {}).get("location") or "台南市",
-        )
-        memory_notes = st.text_area(
-            t("notes"),
-            value=(selected_user or {}).get("notes") or "",
-            height=80,
-        )
-        knowledge_options = t("knowledge_options")
-        knowledge_values = t("knowledge_values")
-        saved_knowledge = (selected_user or {}).get("knowledge_level") or "beginner"
-        knowledge_index = knowledge_values.index(saved_knowledge) if saved_knowledge in knowledge_values else 0
-        knowledge_label = st.selectbox(
-            t("knowledge_level"),
-            knowledge_options,
-            index=knowledge_index,
-        )
-        knowledge_level = knowledge_values[knowledge_options.index(knowledge_label)]
+    if not selected_user:
+        st.caption(t("guest_profile"))
+    if st.button(t("save_profile"), use_container_width=True, type="primary"):
         if not selected_user:
-            st.caption(t("guest_profile"))
-        if st.button(t("save_profile"), use_container_width=True):
-            if not selected_user:
-                st.warning(t("login_first"))
+            st.warning(t("login_first"))
+        else:
+            payload = user_payload(
+                user_name,
+                age,
+                gender,
+                height_input,
+                weight_input,
+                medical_history,
+                location,
+                memory_notes,
+                knowledge_level=knowledge_level,
+            )
+            saved_user = save_memory_user(st.session_state.get("active_user_id"), payload)
+            if saved_user:
+                st.session_state.active_user = saved_user
+                st.session_state.active_user_id = saved_user["id"]
+                st.success(t("profile_saved"))
+                st.rerun()
             else:
-                payload = user_payload(
-                    user_name,
-                    age,
-                    gender,
-                    height_input,
-                    weight_input,
-                    medical_history,
-                    location,
-                    memory_notes,
-                    knowledge_level=knowledge_level,
-                )
-                saved_user = save_memory_user(st.session_state.get("active_user_id"), payload)
-                if saved_user:
-                    st.session_state.active_user = saved_user
-                    st.session_state.active_user_id = saved_user["id"]
-                    st.success(t("profile_saved"))
-                    st.rerun()
-                else:
-                    st.error(t("profile_save_failed"))
+                st.error(t("profile_save_failed"))
 
     st.divider()
 
     st.header(t("line_report"))
     if st.button(t("send_report"), use_container_width=True):
         today_str = datetime.date.today().strftime("%Y-%m-%d")
-        
-        # 👇 動態獲取心電圖分析結果
         ecg_summary = "今日尚未上傳心電圖資料。"
         if st.session_state.get("analysis") is not None:
             if st.session_state.analysis.get("final_result"):
                 ecg_summary = f"已完成心律不整辨識，最高機率結果為：「{st.session_state.analysis['final_result']}」。"
             else:
                 ecg_summary = "已完成 ECG 數位化，尚未執行心律不整辨識。"
-        
+
         report_content = f"""心電圖智慧助理 — 每日健康報告
 
 日期　{today_str}
@@ -1476,21 +1488,21 @@ with st.sidebar:
             st.success(t("line_success"))
         else:
             st.error(t("line_failed"))
-# ==========================================
-# 主畫面
-# ==========================================
-st.markdown(
-    f"""
-    <div class="page-hero">
-      <h1>{t("title")}</h1>
-      <span class="sub">ECG Intelligence Assistant</span>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
 
-with st.container():
-  if st.session_state.main_panel == "history":
+    if selected_user:
+        st.divider()
+        with st.expander(t("admin"), expanded=False):
+            records = load_ecg_records(selected_user["id"])
+            st.write(t("history_count", count=len(records)))
+            if st.button(t("delete_user"), use_container_width=True):
+                if delete_memory_user(selected_user["id"]):
+                    st.session_state.active_user = None
+                    st.session_state.active_user_id = None
+                    st.session_state.messages = default_messages()
+                    st.success(t("deleted_user"))
+                    st.rerun()
+
+  elif st.session_state.main_panel == "history":
     st.subheader(t("history_view"))
     if not selected_user:
         st.info(t("login_to_history"))
