@@ -12,7 +12,9 @@ import cv2        # 🌟 新增：用於影像前處理 (請確認已 pip instal
 import numpy as np # 🌟 新增：用於影像陣列處理
 import subprocess # 🌟 新增：用於呼叫命令列執行 Kaggle 模型
 import sys
+import re
 import torch
+import uuid
 from scipy import stats, signal as scipy_signal
 from fractions import Fraction
 from pathlib import Path
@@ -44,6 +46,9 @@ def get_secret(key, default=None):
 
 
 BACKEND_URL = (os.getenv("ECG_BACKEND_URL") or get_secret("BACKEND_URL", "http://127.0.0.1:8000")).rstrip("/")
+APP_ROOT = Path(__file__).resolve().parent
+USER_DATA_ROOT = Path(os.getenv("ECG_USER_DATA_ROOT", APP_ROOT / "user_data"))
+RUNTIME_DATA_ROOT = Path(os.getenv("ECG_RUNTIME_DATA_ROOT", APP_ROOT / "runtime_data"))
 
 TEXT = {
     "zh": {
@@ -560,12 +565,41 @@ def preprocess_ecg_image(pil_image):
     return enhanced_img
 
 
-def save_uploaded_csv(uploaded_file):
-    file_stem = os.path.splitext(uploaded_file.name)[0]
-    csv_path = f"{file_stem}_uploaded.csv"
-    with open(csv_path, "wb") as f:
-        f.write(uploaded_file.getvalue())
-    return csv_path
+def safe_file_stem(filename, fallback="ecg"):
+    stem = Path(filename or fallback).stem
+    stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", stem).strip("._")
+    return (stem or fallback)[:80]
+
+
+def get_ecg_session_id():
+    if "ecg_session_id" not in st.session_state:
+        st.session_state.ecg_session_id = uuid.uuid4().hex
+    return st.session_state.ecg_session_id
+
+
+def get_ecg_workspace(user_id=None):
+    session_id = get_ecg_session_id()
+    if user_id:
+        workspace = USER_DATA_ROOT / f"user_{user_id}" / "sessions" / session_id
+    else:
+        workspace = RUNTIME_DATA_ROOT / "guest_sessions" / session_id
+    workspace.mkdir(parents=True, exist_ok=True)
+    return workspace
+
+
+def new_ecg_run_dir(user_id=None):
+    run_id = f"{datetime.datetime.now().strftime('%Y%m%d%H%M%S%f')}_{uuid.uuid4().hex[:8]}"
+    run_dir = get_ecg_workspace(user_id) / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    return run_dir
+
+
+def save_uploaded_csv(uploaded_file, user_id=None):
+    run_dir = new_ecg_run_dir(user_id)
+    file_stem = safe_file_stem(uploaded_file.name, "uploaded_ecg")
+    csv_path = run_dir / f"{file_stem}_uploaded.csv"
+    csv_path.write_bytes(uploaded_file.getvalue())
+    return str(csv_path)
 
 
 def resolve_ecg_csv_path(csv_path, user_id=None):
@@ -1243,39 +1277,29 @@ with st.container():
         else:
             img = Image.open(uploaded_file)
             img_bytes = uploaded_file.getvalue()
+            active_user_id = st.session_state.get("active_user_id")
 
             try:
                 with st.spinner(t("preprocess")):
                     processed_cv_img = preprocess_ecg_image(img)
 
                 with st.spinner(t("digitizing", device=DEVICE_STR)):
-                    file_stem = os.path.splitext(uploaded_file.name)[0]
-                    final_csv_path = f"{file_stem}.csv"
-                    temp_img_path = "temp_preprocessed_input.jpg"
-                    temp_csv_path = "temp_ecg_signal.csv"
-                    for p in (temp_img_path, temp_csv_path):
-                        if os.path.exists(p):
-                            try:
-                                os.remove(p)
-                            except PermissionError:
-                                pass
-                    if os.path.exists(temp_csv_path):
-                        temp_csv_path = f"temp_ecg_signal_{os.getpid()}.csv"
-                    if os.path.exists(temp_img_path):
-                        temp_img_path = f"temp_preprocessed_input_{os.getpid()}.jpg"
+                    file_stem = safe_file_stem(uploaded_file.name, "digitized_ecg")
+                    run_dir = new_ecg_run_dir(active_user_id)
+                    temp_img_path = run_dir / f"{file_stem}_preprocessed.jpg"
+                    final_csv_path = run_dir / f"{file_stem}.csv"
                     ok, buf = cv2.imencode(".jpg", processed_cv_img)
                     if not ok:
                         raise RuntimeError("前處理影像編碼失敗")
-                    with open(temp_img_path, "wb") as f:
-                        f.write(buf.tobytes())
+                    temp_img_path.write_bytes(buf.tobytes())
                     result = subprocess.run(
                         [
                             sys.executable,
                             "ecg_digitize.py",
                             "--input",
-                            temp_img_path,
+                            str(temp_img_path),
                             "--output",
-                            temp_csv_path,
+                            str(final_csv_path),
                         ],
                         capture_output=True,
                         text=True,
@@ -1285,18 +1309,16 @@ with st.container():
                     )
                     if result.returncode != 0:
                         raise RuntimeError(result.stderr)
-                    if os.path.exists(final_csv_path):
-                        os.remove(final_csv_path)
-                    os.replace(temp_csv_path, final_csv_path)
-                    save_path = final_csv_path
+                    save_path = str(final_csv_path)
 
                 st.session_state.analysis = {
                     "image_bytes": img_bytes,
                     "filename": uploaded_file.name,
                     "csv_path": save_path,
+                    "csv_filename": Path(save_path).name,
                     "source": t("digitized_csv"),
                 }
-                save_ecg_record(st.session_state.get("active_user_id"), st.session_state.analysis)
+                save_ecg_record(active_user_id, st.session_state.analysis)
                 st.success(t("digitize_done", path=save_path))
 
             except Exception as e:
@@ -1304,8 +1326,9 @@ with st.container():
 
     if classify_clicked:
         try:
+            active_user_id = st.session_state.get("active_user_id")
             if uploaded_csv is not None:
-                save_path = save_uploaded_csv(uploaded_csv)
+                save_path = save_uploaded_csv(uploaded_csv, active_user_id)
                 source = t("uploaded_csv")
             elif st.session_state.get("analysis") and st.session_state.analysis.get("csv_path"):
                 save_path = st.session_state.analysis["csv_path"]
@@ -1335,8 +1358,9 @@ with st.container():
                 })
                 if uploaded_csv is not None:
                     analysis["filename"] = uploaded_csv.name
+                    analysis["csv_filename"] = Path(save_path).name
                 st.session_state.analysis = analysis
-                save_ecg_record(st.session_state.get("active_user_id"), analysis)
+                save_ecg_record(active_user_id, analysis)
 
                 st.session_state.messages.append({
                     "role": "system",

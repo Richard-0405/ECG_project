@@ -53,6 +53,7 @@ ecg_digitizer/
 
 # ---------- Local app data / private runtime files ----------
 user_data/
+runtime_data/
 ecg_memory.db
 ecg_memory_export.txt
 *.sqlite
