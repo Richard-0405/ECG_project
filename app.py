@@ -132,7 +132,9 @@ TEXT = {
         "medical_disclaimer": "提醒：本系統僅供展示與輔助理解，不能取代醫師診斷。若有胸痛、呼吸困難、昏厥、冒冷汗或症狀快速惡化，請立即撥打當地緊急電話或前往急診。",
         "privacy_notice": "訪客暫存檔會定期清除；登入使用者的歷史資料會依帳號分開保存。",
         "environment_panel": "今日環境風險",
+        "environment_tab": "環境風險",
         "environment_refresh": "更新環境資料",
+        "environment_location": "查詢位置",
         "environment_unavailable": "目前無法取得環境資料，請確認位置名稱或稍後再試。",
         "temperature": "溫度",
         "humidity": "濕度",
@@ -239,7 +241,9 @@ TEXT = {
         "medical_disclaimer": "Reminder: this demo is for support and education only, not a medical diagnosis. If you have chest pain, shortness of breath, fainting, cold sweats, or rapidly worsening symptoms, call local emergency services or go to the ER immediately.",
         "privacy_notice": "Guest temporary files are cleaned up regularly; logged-in user history is stored separately by account.",
         "environment_panel": "Today's Environmental Risk",
+        "environment_tab": "Environmental Risk",
         "environment_refresh": "Refresh Environment Data",
+        "environment_location": "Location",
         "environment_unavailable": "Environment data is unavailable. Please check the location name or try again later.",
         "temperature": "Temperature",
         "humidity": "Humidity",
@@ -288,24 +292,73 @@ def first_present(*values):
     return None
 
 
+def location_query_candidates(location_text):
+    location_text = (location_text or "").strip()
+    if not location_text:
+        return []
+
+    normalized = location_text.replace("臺", "台")
+    compact = re.sub(r"(台灣|臺灣|Taiwan|縣|市|區|鄉|鎮|村|里)", "", normalized, flags=re.IGNORECASE).strip()
+    aliases = {
+        "台北": "Taipei",
+        "新北": "New Taipei",
+        "桃園": "Taoyuan",
+        "新竹": "Hsinchu",
+        "苗栗": "Miaoli",
+        "台中": "Taichung",
+        "彰化": "Changhua",
+        "南投": "Nantou",
+        "雲林": "Yunlin",
+        "嘉義": "Chiayi",
+        "台南": "Tainan",
+        "高雄": "Kaohsiung",
+        "屏東": "Pingtung",
+        "宜蘭": "Yilan",
+        "花蓮": "Hualien",
+        "台東": "Taitung",
+        "基隆": "Keelung",
+        "澎湖": "Penghu",
+        "金門": "Kinmen",
+        "連江": "Lienchiang",
+        "馬祖": "Matsu",
+    }
+    candidates = [location_text, normalized, normalized.replace("台", "臺"), compact]
+    for key, value in aliases.items():
+        if key and key in normalized:
+            candidates.append(value)
+    seen = set()
+    return [item for item in candidates if item and not (item in seen or seen.add(item))]
+
+
 @st.cache_data(ttl=1800, show_spinner=False)
 def fetch_environment_summary(location_text, lang="zh"):
     location_text = (location_text or "").strip()
     if not location_text:
         return None
 
-    geo_response = requests.get(
-        "https://geocoding-api.open-meteo.com/v1/search",
-        params={
-            "name": location_text,
-            "count": 1,
-            "language": "zh" if lang == "zh" else "en",
-            "format": "json",
-        },
-        timeout=10,
-    )
-    geo_response.raise_for_status()
-    geo_results = geo_response.json().get("results") or []
+    geo_results = []
+    for query in location_query_candidates(location_text):
+        geo_response = requests.get(
+            "https://geocoding-api.open-meteo.com/v1/search",
+            params={
+                "name": query,
+                "count": 5,
+                "language": "zh" if lang == "zh" else "en",
+                "format": "json",
+            },
+            timeout=10,
+        )
+        geo_response.raise_for_status()
+        results = geo_response.json().get("results") or []
+        taiwan_results = [
+            result for result in results
+            if str(result.get("country_code") or "").upper() == "TW"
+            or result.get("country") in {"台灣", "Taiwan"}
+        ]
+        geo_results = taiwan_results or results
+        if geo_results:
+            break
+
     if not geo_results:
         return None
 
@@ -1335,6 +1388,15 @@ with st.sidebar:
         st.rerun()
 
     if st.button(
+        t("environment_tab"),
+        use_container_width=True,
+        type="primary" if st.session_state.main_panel == "environment" else "secondary",
+        key="sidebar_environment_tab",
+    ):
+        st.session_state.main_panel = "environment"
+        st.rerun()
+
+    if st.button(
         t("profile_edit"),
         use_container_width=True,
         type="primary" if st.session_state.main_panel == "profile" else "secondary",
@@ -1744,6 +1806,15 @@ with st.container():
                     st.success(t("deleted_user"))
                     st.rerun()
 
+  elif st.session_state.main_panel == "environment":
+    st.warning(t("medical_disclaimer"))
+    env_location = st.text_input(
+        t("environment_location"),
+        value=location,
+        key="environment_location_query",
+    )
+    render_environment_panel(env_location)
+
   elif st.session_state.main_panel == "history":
     st.subheader(t("history_view"))
     st.caption(t("privacy_notice"))
@@ -1841,8 +1912,6 @@ with st.container():
 
   else:
     st.warning(t("medical_disclaimer"))
-    render_environment_panel(location)
-    st.divider()
     if "messages" not in st.session_state:
         st.session_state.messages = load_chat_messages(st.session_state.get("active_user_id"))
 
