@@ -1044,6 +1044,9 @@ tools_definition = [
     }
 ]
 
+if "main_panel" not in st.session_state:
+    st.session_state.main_panel = "assistant"
+
 # ==========================================
 # 側邊欄 (Sidebar) 區塊
 # ==========================================
@@ -1066,6 +1069,26 @@ with st.sidebar:
         unsafe_allow_html=True,
     )
     st.markdown("<div style='height:0.8rem'></div>", unsafe_allow_html=True)
+
+    if st.button(
+        t("assistant_tab"),
+        use_container_width=True,
+        type="primary" if st.session_state.main_panel == "assistant" else "secondary",
+        key="sidebar_assistant_tab",
+    ):
+        st.session_state.main_panel = "assistant"
+        st.rerun()
+
+    if st.button(
+        t("history_view"),
+        use_container_width=True,
+        type="primary" if st.session_state.main_panel == "history" else "secondary",
+        key="sidebar_history_tab",
+    ):
+        st.session_state.main_panel = "history"
+        st.rerun()
+
+    st.divider()
 
     st.header(t("memory"))
     backend_ready = backend_request("GET", "/health") is not None
@@ -1466,21 +1489,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-if "main_panel" not in st.session_state:
-    st.session_state.main_panel = "assistant"
-
-switch_col, content_col = st.columns([0.28, 1], gap="large")
-
-with switch_col:
-    st.markdown("<div style='height:1.1rem'></div>", unsafe_allow_html=True)
-    if st.button(t("assistant_tab"), use_container_width=True, type="primary" if st.session_state.main_panel == "assistant" else "secondary"):
-        st.session_state.main_panel = "assistant"
-        st.rerun()
-    if st.button(t("history_view"), use_container_width=True, type="primary" if st.session_state.main_panel == "history" else "secondary"):
-        st.session_state.main_panel = "history"
-        st.rerun()
-
-with content_col:
+with st.container():
   if st.session_state.main_panel == "history":
     st.subheader(t("history_view"))
     if not selected_user:
