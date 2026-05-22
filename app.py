@@ -131,6 +131,17 @@ TEXT = {
         "download_report": "下載此筆 JSON 報告",
         "medical_disclaimer": "提醒：本系統僅供展示與輔助理解，不能取代醫師診斷。若有胸痛、呼吸困難、昏厥、冒冷汗或症狀快速惡化，請立即撥打當地緊急電話或前往急診。",
         "privacy_notice": "訪客暫存檔會定期清除；登入使用者的歷史資料會依帳號分開保存。",
+        "environment_panel": "今日環境風險",
+        "environment_refresh": "更新環境資料",
+        "environment_unavailable": "目前無法取得環境資料，請確認位置名稱或稍後再試。",
+        "temperature": "溫度",
+        "humidity": "濕度",
+        "wind_speed": "風速",
+        "pm25": "PM2.5",
+        "us_aqi": "AQI",
+        "env_risk_low": "環境風險低：目前空氣品質與天氣狀況看起來穩定。",
+        "env_risk_moderate": "環境風險中等：敏感族群或心血管高風險者，建議留意戶外活動時間。",
+        "env_risk_high": "環境風險偏高：若有胸悶、喘、心悸或身體不適，建議減少戶外活動並尋求醫療協助。",
         "emergency_button": "緊急通知家人",
         "emergency_sent": "緊急通知已送出。",
         "emergency_failed": "緊急通知發送失敗，請確認 LINE 設定。",
@@ -227,6 +238,17 @@ TEXT = {
         "download_report": "Download JSON Report",
         "medical_disclaimer": "Reminder: this demo is for support and education only, not a medical diagnosis. If you have chest pain, shortness of breath, fainting, cold sweats, or rapidly worsening symptoms, call local emergency services or go to the ER immediately.",
         "privacy_notice": "Guest temporary files are cleaned up regularly; logged-in user history is stored separately by account.",
+        "environment_panel": "Today's Environmental Risk",
+        "environment_refresh": "Refresh Environment Data",
+        "environment_unavailable": "Environment data is unavailable. Please check the location name or try again later.",
+        "temperature": "Temperature",
+        "humidity": "Humidity",
+        "wind_speed": "Wind",
+        "pm25": "PM2.5",
+        "us_aqi": "AQI",
+        "env_risk_low": "Low environmental risk: current air quality and weather look stable.",
+        "env_risk_moderate": "Moderate environmental risk: sensitive users or people with cardiovascular risk should watch outdoor activity time.",
+        "env_risk_high": "Higher environmental risk: if chest tightness, shortness of breath, palpitations, or discomfort occurs, reduce outdoor activity and seek medical help.",
         "emergency_button": "Emergency Alert",
         "emergency_sent": "Emergency alert sent.",
         "emergency_failed": "Emergency alert failed. Please check LINE settings.",
@@ -257,6 +279,164 @@ def t(key, **kwargs):
     if isinstance(value, str) and kwargs:
         return value.format(**kwargs)
     return value
+
+
+def first_present(*values):
+    for value in values:
+        if value is not None:
+            return value
+    return None
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def fetch_environment_summary(location_text, lang="zh"):
+    location_text = (location_text or "").strip()
+    if not location_text:
+        return None
+
+    geo_response = requests.get(
+        "https://geocoding-api.open-meteo.com/v1/search",
+        params={
+            "name": location_text,
+            "count": 1,
+            "language": "zh" if lang == "zh" else "en",
+            "format": "json",
+        },
+        timeout=10,
+    )
+    geo_response.raise_for_status()
+    geo_results = geo_response.json().get("results") or []
+    if not geo_results:
+        return None
+
+    place = geo_results[0]
+    latitude = place["latitude"]
+    longitude = place["longitude"]
+
+    weather_response = requests.get(
+        "https://api.open-meteo.com/v1/forecast",
+        params={
+            "latitude": latitude,
+            "longitude": longitude,
+            "current": "temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m",
+            "timezone": "auto",
+        },
+        timeout=10,
+    )
+    weather_response.raise_for_status()
+    weather = weather_response.json()
+
+    air_response = requests.get(
+        "https://air-quality-api.open-meteo.com/v1/air-quality",
+        params={
+            "latitude": latitude,
+            "longitude": longitude,
+            "hourly": "pm2_5,pm10,carbon_monoxide,nitrogen_dioxide,ozone,us_aqi",
+            "timezone": "auto",
+        },
+        timeout=10,
+    )
+    air_response.raise_for_status()
+    air = air_response.json()
+
+    current = weather.get("current") or {}
+    hourly = air.get("hourly") or {}
+    times = hourly.get("time") or []
+    current_hour = str(current.get("time") or "")[:13]
+    air_index = 0
+    for idx, value in enumerate(times):
+        if str(value).startswith(current_hour):
+            air_index = idx
+            break
+
+    def hourly_value(name):
+        values = hourly.get(name) or []
+        if air_index < len(values):
+            return values[air_index]
+        return values[0] if values else None
+
+    pm25 = hourly_value("pm2_5")
+    us_aqi = hourly_value("us_aqi")
+    risk_level = "low"
+    if first_present(us_aqi, 0) >= 101 or first_present(pm25, 0) >= 35:
+        risk_level = "high"
+    elif first_present(us_aqi, 0) >= 51 or first_present(pm25, 0) >= 12:
+        risk_level = "moderate"
+
+    place_name = ", ".join(
+        part for part in [place.get("name"), place.get("admin1"), place.get("country")] if part
+    )
+    return {
+        "location": place_name or location_text,
+        "latitude": latitude,
+        "longitude": longitude,
+        "time": current.get("time"),
+        "temperature": current.get("temperature_2m"),
+        "humidity": current.get("relative_humidity_2m"),
+        "wind_speed": current.get("wind_speed_10m"),
+        "pm25": pm25,
+        "pm10": hourly_value("pm10"),
+        "us_aqi": us_aqi,
+        "risk_level": risk_level,
+    }
+
+
+def environment_risk_message(summary):
+    if not summary:
+        return ""
+    if summary.get("risk_level") == "high":
+        return t("env_risk_high")
+    if summary.get("risk_level") == "moderate":
+        return t("env_risk_moderate")
+    return t("env_risk_low")
+
+
+def format_environment_report(summary):
+    if not summary:
+        return "今日環境資料：目前無法取得。"
+    return (
+        f"今日環境資料：{summary.get('location')}\n"
+        f"溫度：{summary.get('temperature')} °C\n"
+        f"濕度：{summary.get('humidity')} %\n"
+        f"風速：{summary.get('wind_speed')} km/h\n"
+        f"PM2.5：{summary.get('pm25')} µg/m³\n"
+        f"AQI：{summary.get('us_aqi')}\n"
+        f"環境提醒：{environment_risk_message(summary)}"
+    )
+
+
+def render_environment_panel(location_text):
+    st.subheader(t("environment_panel"))
+    refresh = st.button(t("environment_refresh"), use_container_width=True)
+    if refresh:
+        fetch_environment_summary.clear()
+    try:
+        summary = fetch_environment_summary(location_text, get_lang())
+    except Exception:
+        summary = None
+
+    if not summary:
+        st.info(t("environment_unavailable"))
+        st.session_state.environment_summary = None
+        return None
+
+    metric_cols = st.columns(5)
+    metric_cols[0].metric(t("temperature"), f"{summary.get('temperature')} °C")
+    metric_cols[1].metric(t("humidity"), f"{summary.get('humidity')} %")
+    metric_cols[2].metric(t("wind_speed"), f"{summary.get('wind_speed')} km/h")
+    metric_cols[3].metric(t("pm25"), f"{summary.get('pm25')} µg/m³")
+    metric_cols[4].metric(t("us_aqi"), summary.get("us_aqi"))
+
+    risk_message = environment_risk_message(summary)
+    if summary.get("risk_level") == "high":
+        st.error(risk_message)
+    elif summary.get("risk_level") == "moderate":
+        st.warning(risk_message)
+    else:
+        st.success(risk_message)
+    st.caption(summary.get("location"))
+    st.session_state.environment_summary = summary
+    return summary
 
 
 def classify_with_boki(csv_path, fs=200, window_seconds=5, fs_target=180):
@@ -1518,6 +1698,11 @@ with st.container():
                 ecg_summary = f"已完成心律不整辨識，最高機率結果為：「{st.session_state.analysis['final_result']}」。"
             else:
                 ecg_summary = "已完成 ECG 數位化，尚未執行心律不整辨識。"
+        try:
+            environment_summary = st.session_state.get("environment_summary") or fetch_environment_summary(location, get_lang())
+        except Exception:
+            environment_summary = None
+        environment_report = format_environment_report(environment_summary)
 
         report_content = f"""心電圖智慧助理 — 每日健康報告
 
@@ -1529,6 +1714,9 @@ with st.container():
 
 — 系統摘要 —
 【心電圖狀態】：{ecg_summary}
+
+— 今日環境 —
+{environment_report}
 
 — 建議 —
 請持續關注身體狀況，若心電圖顯示異常，請盡速攜帶詳細報告就醫。
@@ -1653,6 +1841,8 @@ with st.container():
 
   else:
     st.warning(t("medical_disclaimer"))
+    render_environment_panel(location)
+    st.divider()
     if "messages" not in st.session_state:
         st.session_state.messages = load_chat_messages(st.session_state.get("active_user_id"))
 
@@ -1696,6 +1886,7 @@ with st.container():
             正在與你對話的使用者是「{user_name}」，年齡 {age}，性別 {gender}，身高 {height_input} cm，體重 {weight_input} kg，病史：{medical_history}，位置：{location}。
             長期記憶/備註：{memory_notes}
             使用者醫療知識程度：{knowledge_label}。{knowledge_level_instruction(knowledge_level)}
+            今日環境資料：{format_environment_report(st.session_state.get("environment_summary"))}
             
             【重要操作指令】：
             1. 當使用者要求「尋找附近診所」或「推薦食譜」但沒提到地點時，自動使用「{location}」查詢。
