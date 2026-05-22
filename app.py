@@ -13,6 +13,7 @@ import numpy as np # 🌟 新增：用於影像陣列處理
 import subprocess # 🌟 新增：用於呼叫命令列執行 Kaggle 模型
 import sys
 import re
+import shutil
 import torch
 import uuid
 from scipy import stats, signal as scipy_signal
@@ -49,6 +50,7 @@ BACKEND_URL = (os.getenv("ECG_BACKEND_URL") or get_secret("BACKEND_URL", "http:/
 APP_ROOT = Path(__file__).resolve().parent
 USER_DATA_ROOT = Path(os.getenv("ECG_USER_DATA_ROOT", APP_ROOT / "user_data"))
 RUNTIME_DATA_ROOT = Path(os.getenv("ECG_RUNTIME_DATA_ROOT", APP_ROOT / "runtime_data"))
+GUEST_RUNTIME_RETENTION_DAYS = int(os.getenv("ECG_GUEST_RUNTIME_RETENTION_DAYS", "1"))
 
 TEXT = {
     "zh": {
@@ -125,6 +127,10 @@ TEXT = {
         "select_record": "選擇一筆紀錄",
         "select_leads": "選擇導程",
         "csv_not_found": "找不到這筆紀錄的 CSV 檔案。",
+        "download_csv": "下載此筆 CSV",
+        "download_report": "下載此筆 JSON 報告",
+        "medical_disclaimer": "提醒：本系統僅供展示與輔助理解，不能取代醫師診斷。若有胸痛、呼吸困難、昏厥、冒冷汗或症狀快速惡化，請立即撥打當地緊急電話或前往急診。",
+        "privacy_notice": "訪客暫存檔會定期清除；登入使用者的歷史資料會依帳號分開保存。",
         "emergency_button": "緊急通知家人",
         "emergency_sent": "緊急通知已送出。",
         "emergency_failed": "緊急通知發送失敗，請確認 LINE 設定。",
@@ -217,6 +223,10 @@ TEXT = {
         "select_record": "Select a record",
         "select_leads": "Select leads",
         "csv_not_found": "The CSV file for this record was not found.",
+        "download_csv": "Download CSV",
+        "download_report": "Download JSON Report",
+        "medical_disclaimer": "Reminder: this demo is for support and education only, not a medical diagnosis. If you have chest pain, shortness of breath, fainting, cold sweats, or rapidly worsening symptoms, call local emergency services or go to the ER immediately.",
+        "privacy_notice": "Guest temporary files are cleaned up regularly; logged-in user history is stored separately by account.",
         "emergency_button": "Emergency Alert",
         "emergency_sent": "Emergency alert sent.",
         "emergency_failed": "Emergency alert failed. Please check LINE settings.",
@@ -594,12 +604,30 @@ def new_ecg_run_dir(user_id=None):
     return run_dir
 
 
+def cleanup_old_runtime_files(retention_days=GUEST_RUNTIME_RETENTION_DAYS):
+    cutoff = datetime.datetime.now().timestamp() - (retention_days * 86400)
+    guest_root = RUNTIME_DATA_ROOT / "guest_sessions"
+    if not guest_root.exists():
+        return
+    for session_dir in guest_root.iterdir():
+        try:
+            if session_dir.is_dir() and session_dir.stat().st_mtime < cutoff:
+                shutil.rmtree(session_dir, ignore_errors=True)
+        except OSError:
+            pass
+
+
 def save_uploaded_csv(uploaded_file, user_id=None):
     run_dir = new_ecg_run_dir(user_id)
     file_stem = safe_file_stem(uploaded_file.name, "uploaded_ecg")
     csv_path = run_dir / f"{file_stem}_uploaded.csv"
     csv_path.write_bytes(uploaded_file.getvalue())
     return str(csv_path)
+
+
+if "runtime_cleanup_done" not in st.session_state:
+    cleanup_old_runtime_files()
+    st.session_state.runtime_cleanup_done = True
 
 
 def resolve_ecg_csv_path(csv_path, user_id=None):
@@ -1252,6 +1280,8 @@ st.markdown(
 with st.container():
   if st.session_state.main_panel == "detection":
     st.subheader(t("rhythm_detection"))
+    st.warning(t("medical_disclaimer"))
+    st.caption(t("privacy_notice"))
 
     st.header(t("digitize"))
     uploaded_file = st.file_uploader(
@@ -1528,6 +1558,7 @@ with st.container():
 
   elif st.session_state.main_panel == "history":
     st.subheader(t("history_view"))
+    st.caption(t("privacy_notice"))
     if not selected_user:
         st.info(t("login_to_history"))
     else:
@@ -1562,6 +1593,7 @@ with st.container():
                     lambda value: f"{float(value):.1%}" if value is not None else ""
                 )
             display_cols = [
+                "id",
                 "created_at",
                 "final_result",
                 "probability",
@@ -1599,8 +1631,28 @@ with st.container():
                 if selected_leads:
                     fig, _ = plot_ecg_dataframe(record_df, selected_leads)
                     st.plotly_chart(fig, use_container_width=True)
+                csv_name = f"{safe_file_stem(selected_record.get('csv_filename') or selected_record.get('csv_path') or 'ecg_record')}.csv"
+                report_name = f"{safe_file_stem(selected_record.get('csv_filename') or selected_record.get('csv_path') or 'ecg_record')}_report.json"
+                download_col1, download_col2 = st.columns(2)
+                with download_col1:
+                    st.download_button(
+                        t("download_csv"),
+                        data=record_df.to_csv(index=False).encode("utf-8-sig"),
+                        file_name=csv_name,
+                        mime="text/csv",
+                        use_container_width=True,
+                    )
+                with download_col2:
+                    st.download_button(
+                        t("download_report"),
+                        data=json.dumps(selected_record, ensure_ascii=False, indent=2, default=str).encode("utf-8"),
+                        file_name=report_name,
+                        mime="application/json",
+                        use_container_width=True,
+                    )
 
   else:
+    st.warning(t("medical_disclaimer"))
     if "messages" not in st.session_state:
         st.session_state.messages = load_chat_messages(st.session_state.get("active_user_id"))
 
